@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: bun-linux-x64
+            artifact: platter-linux-x64
+          - target: bun-linux-arm64
+            artifact: platter-linux-arm64
+          - target: bun-darwin-x64
+            artifact: platter-darwin-x64
+          - target: bun-darwin-arm64
+            artifact: platter-darwin-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Compile
+        run: bun build src/index.ts --compile --target=${{ matrix.target }} --outfile=${{ matrix.artifact }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Make binaries executable
+        run: chmod +x artifacts/platter-*
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/platter-*
