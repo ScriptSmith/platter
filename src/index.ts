@@ -176,6 +176,7 @@ interface SessionEntry {
 }
 
 const LOCALHOST_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+const WILDCARD_HOSTS = new Set(["0.0.0.0", "::"]);
 
 async function runHttp() {
   const port = parseInt(values.port!, 10);
@@ -189,9 +190,12 @@ async function runHttp() {
   const app = express();
 
   // Host header validation — DNS rebinding protection
+  // Wildcard binds (0.0.0.0, ::) accept connections on all interfaces, so
+  // the Host header can be anything (localhost, an IP, a hostname, etc.).
+  // Skip host validation for these — auth token still protects the server.
   if (LOCALHOST_HOSTS.has(host)) {
     app.use(localhostHostValidation());
-  } else {
+  } else if (!WILDCARD_HOSTS.has(host)) {
     app.use(hostHeaderValidation([host]));
   }
 
