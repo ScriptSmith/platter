@@ -1,9 +1,8 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { resolvePath } from "../utils.js";
+import { MAX_BYTES, resolvePath } from "../utils.js";
 
 const MAX_RESULTS = 500;
-const MAX_BYTES = 50 * 1024;
 
 type OutputMode = "content" | "files_with_matches" | "count";
 

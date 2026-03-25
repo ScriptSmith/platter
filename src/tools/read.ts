@@ -1,9 +1,6 @@
 import { constants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
-import { formatSize, resolvePath } from "../utils.js";
-
-const MAX_LINES = 2000;
-const MAX_BYTES = 50 * 1024;
+import { MAX_BYTES, MAX_LINES, formatSize, resolvePath } from "../utils.js";
 
 export async function readTool(args: { path: string; offset?: number; limit?: number }, cwd: string): Promise<string> {
   const absolutePath = resolvePath(args.path, cwd);
