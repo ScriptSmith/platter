@@ -53,7 +53,7 @@ bun run compile  # build standalone binary for current platform
 ## Usage
 
 ```
-platter v1.0.0
+platter v1.x.x
 
 Your computer, served on a platter.
 
