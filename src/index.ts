@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import crypto from "node:crypto";
+import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
   hostHeaderValidation,
@@ -10,6 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
 import packageJson from "../package.json";
+import { ALL_TOOL_NAMES, type SecurityConfig, type ToolName } from "./security.js";
 import { createServer } from "./server.js";
 
 const USAGE = `platter v${packageJson.version}
@@ -26,6 +28,14 @@ Options:
       --cors-origin <origin>     Allowed CORS origin (default: *)
       --auth-token <token>       Bearer token for HTTP auth (auto-generated if omitted)
       --no-auth                  Disable bearer token authentication
+
+Restrictions:
+      --tools <list>             Comma-separated tools to enable (default: all)
+                                 Valid: ${ALL_TOOL_NAMES.join(", ")}
+      --allow-path <path>        Restrict file tools to this path (repeatable)
+      --allow-command <regex>    Allow bash commands matching this pattern (repeatable)
+                                 Pattern must match the entire command string
+
   -h, --help                     Show this help message
   -v, --version                  Show version number`;
 
@@ -49,6 +59,9 @@ const { values } = parseArgs({
     "cors-origin": { type: "string", default: "*" },
     "auth-token": { type: "string" },
     "no-auth": { type: "boolean", default: false },
+    tools: { type: "string" },
+    "allow-path": { type: "string", multiple: true },
+    "allow-command": { type: "string", multiple: true },
   },
 });
 
@@ -64,13 +77,67 @@ if (values["auth-token"] && values["no-auth"]) {
   process.exit(1);
 }
 
+// --- Security restrictions ---
+
+const security: SecurityConfig = {};
+
+if (values.tools) {
+  const names = values.tools.split(",").map((t) => t.trim().toLowerCase());
+  for (const name of names) {
+    if (!(ALL_TOOL_NAMES as readonly string[]).includes(name)) {
+      console.error(`Error: unknown tool "${name}". Valid tools: ${ALL_TOOL_NAMES.join(", ")}\n`);
+      console.error(USAGE);
+      process.exit(1);
+    }
+  }
+  security.allowedTools = new Set(names as ToolName[]);
+}
+
+if (values["allow-path"]?.length) {
+  security.allowedPaths = values["allow-path"].map((p) => resolve(p));
+}
+
+if (values["allow-command"]?.length) {
+  security.allowedCommands = [];
+  for (const pattern of values["allow-command"]) {
+    try {
+      security.allowedCommands.push(new RegExp(`^(?:${pattern})$`));
+    } catch (e: any) {
+      console.error(`Error: invalid --allow-command regex "${pattern}": ${e.message}\n`);
+      process.exit(1);
+    }
+  }
+}
+
+const bashEnabled = !security.allowedTools || security.allowedTools.has("bash");
+if (security.allowedPaths && bashEnabled && !security.allowedCommands) {
+  console.error(
+    "Warning: bash tool is enabled with --allow-path but no --allow-command restrictions.\n" +
+      "  Bash commands can access paths outside the allowed list.\n" +
+      "  Consider --tools (without bash) or adding --allow-command to restrict commands.\n",
+  );
+}
+
 const cwd = values.cwd!;
 
+function logRestrictions() {
+  if (security.allowedTools) {
+    console.error(`Tools: ${[...security.allowedTools].join(", ")}`);
+  }
+  if (security.allowedPaths) {
+    console.error(`Allowed paths: ${security.allowedPaths.join(", ")}`);
+  }
+  if (security.allowedCommands) {
+    console.error(`Allowed commands: ${values["allow-command"]!.join(", ")}`);
+  }
+}
+
 async function runStdio() {
-  const server = createServer(cwd);
+  const server = createServer(cwd, security);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(`platter MCP server running on stdio (cwd: ${cwd})`);
+  logRestrictions();
 }
 
 interface SessionEntry {
@@ -88,7 +155,7 @@ async function runHttp() {
 
   // Resolve auth token
   const noAuth = values["no-auth"] as boolean;
-  const token = noAuth ? null : values["auth-token"] || crypto.randomUUID();
+  const token = noAuth ? null : values["auth-token"] || crypto.randomBytes(32).toString("base64url");
 
   const app = express();
 
@@ -128,11 +195,17 @@ async function runHttp() {
     });
   }
 
-  // Bearer token authentication
+  // Bearer token authentication (RFC 6750)
   if (token) {
     app.use((req, res, next) => {
       const auth = req.headers.authorization;
+      if (!auth) {
+        res.setHeader("WWW-Authenticate", "Bearer");
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
       if (auth !== `Bearer ${token}`) {
+        res.setHeader("WWW-Authenticate", 'Bearer error="invalid_token"');
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
@@ -172,7 +245,7 @@ async function runHttp() {
     }
 
     // New session — create server + transport
-    const server = createServer(cwd);
+    const server = createServer(cwd, security);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
       onsessioninitialized: (id) => {
@@ -226,6 +299,7 @@ async function runHttp() {
     } else {
       console.error("Auth: disabled (--no-auth)");
     }
+    logRestrictions();
   });
 }
 
