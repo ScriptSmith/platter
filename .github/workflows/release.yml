@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Build and validate without publishing"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -36,6 +42,7 @@ jobs:
 
   release:
     name: Create Release
+    if: ${{ !inputs.dry-run }}
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -53,6 +60,7 @@ jobs:
 
   docker:
     name: Push Docker Image
+    if: ${{ !inputs.dry-run }}
     needs: build
     runs-on: ubuntu-latest
     steps:
