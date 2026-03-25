@@ -1,14 +1,9 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { formatSize } from "../utils.js";
 
 const MAX_LINES = 2000;
 const MAX_BYTES = 50 * 1024;
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
 
 function getShellConfig(): { shell: string; args: string[] } {
   const shell = process.env.SHELL || "/bin/bash";

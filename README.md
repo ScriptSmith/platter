@@ -43,9 +43,11 @@ platter [options]
 Options:
   -t, --transport <stdio|http>   Transport mode (default: stdio)
   -p, --port <number>            HTTP port (default: 3100)
-  -h, --host <address>           HTTP bind address (default: 127.0.0.1)
+      --host <address>           HTTP bind address (default: 127.0.0.1)
       --cwd <path>               Working directory for tools (default: current directory)
       --cors-origin <origin>     Allowed CORS origin (default: * — reflects request origin)
+  -h, --help                     Show help message
+  -v, --version                  Show version number
 ```
 
 ### Stdio mode

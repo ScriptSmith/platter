@@ -1,23 +1,9 @@
 import { constants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { formatSize, resolvePath } from "../utils.js";
 
 const MAX_LINES = 2000;
 const MAX_BYTES = 50 * 1024;
-
-function resolvePath(path: string, cwd: string): string {
-  let p = path;
-  if (p === "~") return homedir();
-  if (p.startsWith("~/")) p = homedir() + p.slice(1);
-  return isAbsolute(p) ? p : resolve(cwd, p);
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
 
 export async function readTool(args: { path: string; offset?: number; limit?: number }, cwd: string): Promise<string> {
   const absolutePath = resolvePath(args.path, cwd);
@@ -101,6 +87,7 @@ export async function readTool(args: { path: string; offset?: number; limit?: nu
 }
 
 function detectImageMime(buffer: Buffer): string | null {
+  if (buffer.length < 12) return null;
   if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
   if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return "image/png";
   if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) return "image/gif";

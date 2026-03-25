@@ -1,13 +1,6 @@
 import { writeFile as fsWriteFile, mkdir } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, resolve } from "node:path";
-
-function resolvePath(path: string, cwd: string): string {
-  let p = path;
-  if (p === "~") return homedir();
-  if (p.startsWith("~/")) p = homedir() + p.slice(1);
-  return isAbsolute(p) ? p : resolve(cwd, p);
-}
+import { dirname } from "node:path";
+import { resolvePath } from "../utils.js";
 
 export async function writeTool(args: { path: string; content: string }, cwd: string): Promise<string> {
   const absolutePath = resolvePath(args.path, cwd);

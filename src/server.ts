@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import packageJson from "../package.json";
 import { bashTool } from "./tools/bash.js";
 import { editTool } from "./tools/edit.js";
 import { readTool } from "./tools/read.js";
@@ -8,7 +9,7 @@ import { writeTool } from "./tools/write.js";
 export function createServer(cwd: string): McpServer {
   const server = new McpServer({
     name: "platter",
-    version: "1.0.0",
+    version: packageJson.version,
   });
 
   server.registerTool(

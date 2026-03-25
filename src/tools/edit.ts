@@ -1,15 +1,7 @@
 import { constants } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
 import * as Diff from "diff";
-
-function resolvePath(path: string, cwd: string): string {
-  let p = path;
-  if (p === "~") return homedir();
-  if (p.startsWith("~/")) p = homedir() + p.slice(1);
-  return isAbsolute(p) ? p : resolve(cwd, p);
-}
+import { resolvePath } from "../utils.js";
 
 // --- Line ending handling ---
 
@@ -51,10 +43,33 @@ function normalizeForFuzzyMatch(text: string): string {
 
 interface FuzzyMatchResult {
   found: boolean;
-  index: number;
-  matchLength: number;
+  originalIndex: number;
+  originalMatchLength: number;
   usedFuzzyMatch: boolean;
-  contentForReplacement: string;
+}
+
+function offsetToLineCol(text: string, offset: number): { line: number; col: number } {
+  let line = 0;
+  let col = 0;
+  for (let i = 0; i < offset; i++) {
+    if (text[i] === "\n") {
+      line++;
+      col = 0;
+    } else {
+      col++;
+    }
+  }
+  return { line, col };
+}
+
+function lineColToOffset(text: string, line: number, col: number): number {
+  let currentLine = 0;
+  let i = 0;
+  while (currentLine < line && i < text.length) {
+    if (text[i] === "\n") currentLine++;
+    i++;
+  }
+  return i + col;
 }
 
 function fuzzyFindText(content: string, oldText: string): FuzzyMatchResult {
@@ -63,10 +78,9 @@ function fuzzyFindText(content: string, oldText: string): FuzzyMatchResult {
   if (exactIndex !== -1) {
     return {
       found: true,
-      index: exactIndex,
-      matchLength: oldText.length,
+      originalIndex: exactIndex,
+      originalMatchLength: oldText.length,
       usedFuzzyMatch: false,
-      contentForReplacement: content,
     };
   }
 
@@ -76,15 +90,21 @@ function fuzzyFindText(content: string, oldText: string): FuzzyMatchResult {
   const fuzzyIndex = fuzzyContent.indexOf(fuzzyOldText);
 
   if (fuzzyIndex === -1) {
-    return { found: false, index: -1, matchLength: 0, usedFuzzyMatch: false, contentForReplacement: content };
+    return { found: false, originalIndex: -1, originalMatchLength: 0, usedFuzzyMatch: false };
   }
+
+  // Map fuzzy position back to original content using line:col
+  const startPos = offsetToLineCol(fuzzyContent, fuzzyIndex);
+  const endPos = offsetToLineCol(fuzzyContent, fuzzyIndex + fuzzyOldText.length);
+
+  const originalStart = lineColToOffset(content, startPos.line, startPos.col);
+  const originalEnd = lineColToOffset(content, endPos.line, endPos.col);
 
   return {
     found: true,
-    index: fuzzyIndex,
-    matchLength: fuzzyOldText.length,
+    originalIndex: originalStart,
+    originalMatchLength: originalEnd - originalStart,
     usedFuzzyMatch: true,
-    contentForReplacement: fuzzyContent,
   };
 }
 
@@ -196,29 +216,36 @@ export async function editTool(
   }
 
   // Check for multiple occurrences
-  const fuzzyContent = normalizeForFuzzyMatch(normalizedContent);
-  const fuzzyOldText = normalizeForFuzzyMatch(normalizedOldText);
-  const occurrences = fuzzyContent.split(fuzzyOldText).length - 1;
-
-  if (occurrences > 1) {
-    throw new Error(
-      `Found ${occurrences} occurrences of the text in ${args.path}. The text must be unique. Provide more context to make it unique.`,
-    );
+  if (matchResult.usedFuzzyMatch) {
+    const fuzzyContent = normalizeForFuzzyMatch(normalizedContent);
+    const fuzzyOldText = normalizeForFuzzyMatch(normalizedOldText);
+    const occurrences = fuzzyContent.split(fuzzyOldText).length - 1;
+    if (occurrences > 1) {
+      throw new Error(
+        `Found ${occurrences} occurrences of the text in ${args.path}. The text must be unique. Provide more context to make it unique.`,
+      );
+    }
+  } else {
+    const occurrences = normalizedContent.split(normalizedOldText).length - 1;
+    if (occurrences > 1) {
+      throw new Error(
+        `Found ${occurrences} occurrences of the text in ${args.path}. The text must be unique. Provide more context to make it unique.`,
+      );
+    }
   }
 
-  const baseContent = matchResult.contentForReplacement;
   const newContent =
-    baseContent.substring(0, matchResult.index) +
+    normalizedContent.substring(0, matchResult.originalIndex) +
     normalizedNewText +
-    baseContent.substring(matchResult.index + matchResult.matchLength);
+    normalizedContent.substring(matchResult.originalIndex + matchResult.originalMatchLength);
 
-  if (baseContent === newContent) {
+  if (normalizedContent === newContent) {
     throw new Error(`No changes made to ${args.path}. The replacement produced identical content.`);
   }
 
   const finalContent = bom + restoreLineEndings(newContent, originalEnding);
   await writeFile(absolutePath, finalContent, "utf-8");
 
-  const diff = generateDiffString(baseContent, newContent);
+  const diff = generateDiffString(normalizedContent, newContent);
   return `Successfully edited ${args.path}.\n\n${diff}`;
 }
