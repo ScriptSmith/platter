@@ -266,6 +266,10 @@ docker run --rm -p 3100:3100 \
 - **Process isolation.** Processes inside the container cannot see or signal host processes.
 - **Resource limits.** Docker's `--memory`, `--cpus`, and `--pids-limit` flags can cap resource usage to prevent denial of service.
 
+#### Containers vs VMs
+
+Containers share the host kernel — isolation is enforced by kernel features (namespaces, cgroups, seccomp). A kernel vulnerability or a misconfigured container (e.g. `--privileged`) can break the boundary. VMs run a separate kernel on virtualised hardware, so a guest compromise does not directly expose the host. If your threat model includes untrusted code that may attempt kernel exploits, run platter inside a VM (or a VM-backed container runtime like [Kata Containers](https://katacontainers.io/) or [Firecracker](https://firecracker-microvm.github.io/)). For most use cases — limiting blast radius from an AI agent — a properly configured container (non-root, capabilities dropped, `--network none`) is sufficient.
+
 #### Combining sandbox and container
 
 The just-bash sandbox and Docker container address different layers. Used together, they provide defense in depth:
