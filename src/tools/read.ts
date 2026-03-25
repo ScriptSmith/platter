@@ -48,7 +48,8 @@ export async function readTool(args: { path: string; offset?: number; limit?: nu
 
     if (i === 0 && lineBytes > MAX_BYTES) {
       // First line exceeds byte limit
-      return `[Line ${startLineDisplay} is ${formatSize(Buffer.byteLength(line, "utf-8"))}, exceeds ${formatSize(MAX_BYTES)} limit. Use bash: sed -n '${startLineDisplay}p' ${args.path} | head -c ${MAX_BYTES}]`;
+      const escapedPath = args.path.replace(/'/g, "'\\''");
+      return `[Line ${startLineDisplay} is ${formatSize(Buffer.byteLength(line, "utf-8"))}, exceeds ${formatSize(MAX_BYTES)} limit. Use bash: sed -n '${startLineDisplay}p' '${escapedPath}' | head -c ${MAX_BYTES}]`;
     }
 
     if (outputBytes + lineBytes > MAX_BYTES) {
