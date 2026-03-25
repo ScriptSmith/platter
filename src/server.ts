@@ -8,6 +8,7 @@ import { editTool } from "./tools/edit.js";
 import { globTool } from "./tools/glob.js";
 import { grepTool } from "./tools/grep.js";
 import { readTool } from "./tools/read.js";
+import { createSandboxBash } from "./tools/sandbox-bash.js";
 import { writeTool } from "./tools/write.js";
 import { resolvePath } from "./utils.js";
 
@@ -118,25 +119,33 @@ export function createServer(cwd: string, security: SecurityConfig = {}): McpSer
   }
 
   if (enabled("bash")) {
+    const sandboxEnabled = security.sandbox?.enabled === true;
+    const sandboxBashFn = sandboxEnabled ? createSandboxBash(security.sandbox!, security.allowedPaths, cwd) : null;
+
+    const bashDescription = sandboxEnabled
+      ? "Execute a bash command in a sandboxed environment (just-bash). Returns stdout and stderr combined. Output is truncated to the last 2000 lines or 50KB. Optionally provide a timeout in seconds. Note: sandbox does not support native binaries — only bash builtins and just-bash built-in commands."
+      : "Execute a bash command. Returns stdout and stderr combined. Output is truncated to the last 2000 lines or 50KB. Optionally provide a timeout in seconds.";
+
+    const destructiveHint = sandboxEnabled ? security.sandbox!.fsMode === "readwrite" : true;
+
     server.registerTool(
       "bash",
       {
         title: "Bash",
-        description:
-          "Execute a bash command. Returns stdout and stderr combined. Output is truncated to the last 2000 lines or 50KB. Optionally provide a timeout in seconds.",
+        description: bashDescription,
         inputSchema: {
           command: z.string().describe("Bash command to execute"),
           timeout: z.number().optional().describe("Timeout in seconds (optional, no default timeout)"),
         },
         annotations: {
           readOnlyHint: false,
-          destructiveHint: true,
+          destructiveHint,
         },
       },
       async (args) => {
         try {
           checkCommand(args.command);
-          const result = await bashTool(args, cwd);
+          const result = sandboxBashFn ? await sandboxBashFn(args, cwd) : await bashTool(args, cwd);
           return { content: [{ type: "text", text: result }] };
         } catch (err: any) {
           return { content: [{ type: "text", text: err.message }], isError: true };

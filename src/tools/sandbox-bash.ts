@@ -1,0 +1,123 @@
+import { Bash, type IFileSystem, InMemoryFs, MountableFs, type NetworkConfig, OverlayFs, ReadWriteFs } from "just-bash";
+import type { SandboxConfig } from "../security.js";
+import { formatSize, MAX_BYTES, truncateTail } from "../utils.js";
+
+function buildFilesystem(
+  config: SandboxConfig,
+  allowedPaths: string[] | undefined,
+  cwd: string,
+): { fs: IFileSystem; cwd: string } {
+  const { fsMode } = config;
+
+  if (fsMode === "memory") {
+    return { fs: new InMemoryFs(), cwd: "/home/user" };
+  }
+
+  if (fsMode === "readwrite") {
+    // ReadWriteFs has no mountPoint — always wrap in MountableFs so absolute paths map naturally
+    const base = new InMemoryFs();
+    const mountable = new MountableFs({ base });
+    if (allowedPaths?.length) {
+      let cwdCovered = false;
+      for (const p of allowedPaths) {
+        mountable.mount(p, new ReadWriteFs({ root: p }));
+        if (cwd === p || cwd.startsWith(`${p}/`)) {
+          cwdCovered = true;
+        }
+      }
+      if (!cwdCovered) {
+        mountable.mount(cwd, new ReadWriteFs({ root: cwd }));
+      }
+    } else {
+      mountable.mount(cwd, new ReadWriteFs({ root: cwd }));
+    }
+    return { fs: mountable, cwd };
+  }
+
+  // overlay — OverlayFs has mountPoint so can be used directly for single-mount case
+  if (!allowedPaths?.length) {
+    const overlay = new OverlayFs({ root: cwd, mountPoint: cwd });
+    return { fs: overlay, cwd };
+  }
+  const base = new InMemoryFs();
+  const mountable = new MountableFs({ base });
+  let cwdCovered = false;
+  for (const p of allowedPaths) {
+    mountable.mount(p, new OverlayFs({ root: p, mountPoint: p }));
+    if (cwd === p || cwd.startsWith(`${p}/`)) {
+      cwdCovered = true;
+    }
+  }
+  if (!cwdCovered) {
+    mountable.mount(cwd, new OverlayFs({ root: cwd, mountPoint: cwd }));
+  }
+  return { fs: mountable, cwd };
+}
+
+function buildNetwork(config: SandboxConfig): NetworkConfig | undefined {
+  if (!config.allowedUrls?.length) {
+    return undefined;
+  }
+  return {
+    allowedUrlPrefixes: config.allowedUrls,
+    allowedMethods: ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH"],
+    denyPrivateRanges: true,
+  };
+}
+
+export function createSandboxBash(
+  config: SandboxConfig,
+  allowedPaths: string[] | undefined,
+  cwd: string,
+): (args: { command: string; timeout?: number }, execCwd: string) => Promise<string> {
+  const { fs, cwd: virtualCwd } = buildFilesystem(config, allowedPaths, cwd);
+  const network = buildNetwork(config);
+
+  const bash = new Bash({
+    fs,
+    cwd: virtualCwd,
+    network,
+  });
+
+  return async (args, _execCwd) => {
+    const timeoutMs = args.timeout !== undefined && args.timeout > 0 ? args.timeout * 1000 : undefined;
+    const signal = timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined;
+
+    let result: Awaited<ReturnType<typeof bash.exec>>;
+    try {
+      result = await bash.exec(args.command, { signal });
+    } catch (err: any) {
+      // AbortSignal.timeout throws a DOMException with name "TimeoutError"
+      if (err.name === "TimeoutError" || signal?.aborted) {
+        throw new Error(`Command timed out after ${args.timeout} seconds`);
+      }
+      throw err;
+    }
+
+    // Check if signal aborted after exec returned (just-bash may resolve rather than reject)
+    if (signal?.aborted) {
+      let output = result.stdout + (result.stderr ? (result.stdout ? "\n" : "") + result.stderr : "");
+      if (output) output += "\n\n";
+      output += `Command timed out after ${args.timeout} seconds`;
+      throw new Error(output);
+    }
+
+    const fullOutput = result.stdout + (result.stderr ? (result.stdout ? "\n" : "") + result.stderr : "");
+
+    const truncation = truncateTail(fullOutput);
+    let outputText = truncation.content || "(no output)";
+
+    if (truncation.truncated) {
+      const startLine = truncation.totalLines - truncation.outputLines + 1;
+      const endLine = truncation.totalLines;
+      outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(MAX_BYTES)} limit)]`;
+    }
+
+    if (result.exitCode !== 0) {
+      outputText += `\n\nCommand exited with code ${result.exitCode}`;
+      throw new Error(outputText);
+    }
+
+    return outputText;
+  };
+}

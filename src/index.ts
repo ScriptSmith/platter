@@ -11,7 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
 import packageJson from "../package.json";
-import { ALL_TOOL_NAMES, type SecurityConfig, type ToolName } from "./security.js";
+import { ALL_TOOL_NAMES, type SandboxFsMode, type SecurityConfig, type ToolName } from "./security.js";
 import { createServer } from "./server.js";
 
 const USAGE = `platter v${packageJson.version}
@@ -35,6 +35,11 @@ Restrictions:
       --allow-path <path>        Restrict file tools to this path (repeatable)
       --allow-command <regex>    Allow bash commands matching this pattern (repeatable)
                                  Pattern must match the entire command string
+
+Sandbox:
+      --sandbox                  Use just-bash sandbox instead of native bash
+      --sandbox-fs <mode>        Filesystem backend: memory, overlay, readwrite (default: readwrite)
+      --sandbox-allow-url <url>  Allow network access to URL prefix (repeatable)
 
   -h, --help                     Show this help message
   -v, --version                  Show version number`;
@@ -62,6 +67,9 @@ const { values } = parseArgs({
     tools: { type: "string" },
     "allow-path": { type: "string", multiple: true },
     "allow-command": { type: "string", multiple: true },
+    sandbox: { type: "boolean", default: false },
+    "sandbox-fs": { type: "string", default: "readwrite" },
+    "sandbox-allow-url": { type: "string", multiple: true },
   },
 });
 
@@ -109,8 +117,23 @@ if (values["allow-command"]?.length) {
   }
 }
 
+const VALID_SANDBOX_FS_MODES = ["memory", "overlay", "readwrite"];
+if (values.sandbox) {
+  const fsMode = values["sandbox-fs"]!;
+  if (!VALID_SANDBOX_FS_MODES.includes(fsMode)) {
+    console.error(`Error: invalid --sandbox-fs "${fsMode}". Must be one of: ${VALID_SANDBOX_FS_MODES.join(", ")}\n`);
+    console.error(USAGE);
+    process.exit(1);
+  }
+  security.sandbox = {
+    enabled: true,
+    fsMode: fsMode as SandboxFsMode,
+    allowedUrls: values["sandbox-allow-url"]?.length ? values["sandbox-allow-url"] : undefined,
+  };
+}
+
 const bashEnabled = !security.allowedTools || security.allowedTools.has("bash");
-if (security.allowedPaths && bashEnabled && !security.allowedCommands) {
+if (security.allowedPaths && bashEnabled && !security.allowedCommands && !security.sandbox?.enabled) {
   console.error(
     "Warning: bash tool is enabled with --allow-path but no --allow-command restrictions.\n" +
       "  Bash commands can access paths outside the allowed list.\n" +
@@ -129,6 +152,12 @@ function logRestrictions() {
   }
   if (security.allowedCommands) {
     console.error(`Allowed commands: ${values["allow-command"]!.join(", ")}`);
+  }
+  if (security.sandbox?.enabled) {
+    console.error(`Sandbox: enabled (fs: ${security.sandbox.fsMode})`);
+    if (security.sandbox.allowedUrls) {
+      console.error(`Sandbox allowed URLs: ${security.sandbox.allowedUrls.join(", ")}`);
+    }
   }
 }
 

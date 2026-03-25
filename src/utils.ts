@@ -13,3 +13,46 @@ export function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
+
+export const MAX_LINES = 2000;
+export const MAX_BYTES = 50 * 1024;
+
+/**
+ * Truncate from the tail (keep last N lines/bytes), suitable for bash
+ * output where errors/final results appear at the end.
+ */
+export function truncateTail(content: string): {
+  content: string;
+  truncated: boolean;
+  totalLines: number;
+  outputLines: number;
+} {
+  const lines = content.split("\n");
+  const totalLines = lines.length;
+  const totalBytes = Buffer.byteLength(content, "utf-8");
+
+  if (totalLines <= MAX_LINES && totalBytes <= MAX_BYTES) {
+    return { content, truncated: false, totalLines, outputLines: totalLines };
+  }
+
+  // Work backwards
+  const outputLinesArr: string[] = [];
+  let outputBytes = 0;
+
+  for (let i = lines.length - 1; i >= 0 && outputLinesArr.length < MAX_LINES; i--) {
+    const line = lines[i];
+    const lineBytes = Buffer.byteLength(line, "utf-8") + (outputLinesArr.length > 0 ? 1 : 0);
+
+    if (outputBytes + lineBytes > MAX_BYTES) break;
+
+    outputLinesArr.unshift(line);
+    outputBytes += lineBytes;
+  }
+
+  return {
+    content: outputLinesArr.join("\n"),
+    truncated: true,
+    totalLines,
+    outputLines: outputLinesArr.length,
+  };
+}

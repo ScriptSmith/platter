@@ -58,6 +58,11 @@ Restrictions:
       --allow-command <regex>    Allow bash commands matching this pattern (repeatable)
                                  Pattern must match the entire command string
 
+Sandbox:
+      --sandbox                  Use just-bash sandbox instead of native bash
+      --sandbox-fs <mode>        Filesystem backend: memory, overlay, readwrite (default: readwrite)
+      --sandbox-allow-url <url>  Allow network access to URL prefix (repeatable)
+
   -h, --help                     Show help message
   -v, --version                  Show version number
 ```
@@ -186,6 +191,45 @@ The server validates the `Host` header to prevent [DNS rebinding attacks](https:
 - **No process-level sandboxing.** All restrictions are enforced in application code within the platter process. They do not use OS-level mechanisms (seccomp, namespaces, pledge, etc.). A vulnerability in platter itself, Bun, or a dependency could bypass all restrictions.
 
 For high-security deployments, combine these restrictions with OS-level isolation (containers, VMs, dedicated users with limited filesystem permissions).
+
+### Sandbox mode (just-bash)
+
+Opt into [just-bash](https://github.com/vercel-labs/just-bash) — a TypeScript reimplementation of bash with a virtual filesystem — for true process-level isolation. No native processes are spawned; the shell runs entirely in the Bun runtime.
+
+```bash
+platter --sandbox                                          # readwrite fs, no network
+platter --sandbox --sandbox-fs memory                      # pure in-memory fs
+platter --sandbox --sandbox-fs overlay                     # reads from disk, writes ephemeral
+platter --sandbox --sandbox-allow-url "https://api.example.com"  # allow network to prefix
+```
+
+#### Filesystem modes
+
+| Mode | Reads | Writes | Use case |
+|---|---|---|---|
+| `memory` | Virtual only | Virtual only | Maximum isolation, no disk access at all |
+| `readwrite` (default) | Real disk | Real disk | Sandboxed execution with real file access |
+| `overlay` | Real disk | In-memory (ephemeral) | Explore files without risk of modification |
+
+#### Network access
+
+Network access is **disabled by default**. Use `--sandbox-allow-url` (repeatable) to allow access to specific URL prefixes. Private/loopback IPs are always denied.
+
+```bash
+platter --sandbox --sandbox-allow-url "https://api.github.com" --sandbox-allow-url "https://registry.npmjs.org"
+```
+
+#### Interaction with other restrictions
+
+- **`--allow-path`**: In `readwrite` and `overlay` modes, each allowed path is mounted into the sandbox. In `memory` mode, `--allow-path` is ignored.
+- **`--allow-command`**: Command regex validation still applies before the sandbox executes the command.
+- **`--sandbox` suppresses the bash + `--allow-path` warning**, since the sandbox enforces filesystem boundaries.
+
+#### Limitations
+
+- **Not full bash.** just-bash is a TypeScript reimplementation — some edge cases may behave differently from GNU bash.
+- **No native binaries.** Commands like `git`, `node`, `docker`, `rg`, `python` are not available. Only bash builtins and just-bash's built-in command set work.
+- **Beta software.** just-bash is under active development. Test your workflows before relying on it in production.
 
 ## Build
 

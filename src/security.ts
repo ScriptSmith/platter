@@ -5,10 +5,19 @@ import { dirname, resolve, sep } from "node:path";
 export const ALL_TOOL_NAMES = ["read", "write", "edit", "bash", "glob", "grep"] as const;
 export type ToolName = (typeof ALL_TOOL_NAMES)[number];
 
+export type SandboxFsMode = "memory" | "overlay" | "readwrite";
+
+export interface SandboxConfig {
+  enabled: boolean;
+  fsMode: SandboxFsMode;
+  allowedUrls?: string[];
+}
+
 export interface SecurityConfig {
   allowedTools?: Set<ToolName>;
   allowedPaths?: string[];
   allowedCommands?: RegExp[];
+  sandbox?: SandboxConfig;
 }
 
 /**
