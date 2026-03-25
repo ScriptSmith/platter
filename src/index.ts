@@ -2,6 +2,10 @@
 
 import crypto from "node:crypto";
 import { parseArgs } from "node:util";
+import {
+  hostHeaderValidation,
+  localhostHostValidation,
+} from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
@@ -20,6 +24,8 @@ Options:
       --host <address>           HTTP bind address (default: 127.0.0.1)
       --cwd <path>               Working directory for tools (default: current directory)
       --cors-origin <origin>     Allowed CORS origin (default: *)
+      --auth-token <token>       Bearer token for HTTP auth (auto-generated if omitted)
+      --no-auth                  Disable bearer token authentication
   -h, --help                     Show this help message
   -v, --version                  Show version number`;
 
@@ -41,11 +47,19 @@ const { values } = parseArgs({
     host: { type: "string", default: "127.0.0.1" },
     cwd: { type: "string", default: process.cwd() },
     "cors-origin": { type: "string", default: "*" },
+    "auth-token": { type: "string" },
+    "no-auth": { type: "boolean", default: false },
   },
 });
 
 if (values.transport !== "stdio" && values.transport !== "http") {
   console.error(`Error: invalid transport "${values.transport}". Must be "stdio" or "http".\n`);
+  console.error(USAGE);
+  process.exit(1);
+}
+
+if (values["auth-token"] && values["no-auth"]) {
+  console.error("Error: --auth-token and --no-auth are mutually exclusive.\n");
   console.error(USAGE);
   process.exit(1);
 }
@@ -65,19 +79,32 @@ interface SessionEntry {
   lastAccessed: number;
 }
 
+const LOCALHOST_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+
 async function runHttp() {
   const port = parseInt(values.port!, 10);
   const host = values.host!;
   const corsOrigin = values["cors-origin"]!;
 
+  // Resolve auth token
+  const noAuth = values["no-auth"] as boolean;
+  const token = noAuth ? null : values["auth-token"] || crypto.randomUUID();
+
   const app = express();
+
+  // Host header validation — DNS rebinding protection
+  if (LOCALHOST_HOSTS.has(host)) {
+    app.use(localhostHostValidation());
+  } else {
+    app.use(hostHeaderValidation([host]));
+  }
 
   // CORS — allow browser-based agents to connect
   app.use((req, res, next) => {
     const origin = corsOrigin === "*" ? req.headers.origin || "*" : corsOrigin;
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Mcp-Session-Id");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Mcp-Session-Id, Authorization");
     res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
     if (corsOrigin !== "*") {
       res.setHeader("Access-Control-Allow-Credentials", "true");
@@ -88,6 +115,30 @@ async function runHttp() {
     }
     next();
   });
+
+  // Origin validation — actively reject requests with non-matching Origin header
+  if (corsOrigin !== "*") {
+    app.use((req, res, next) => {
+      const origin = req.headers.origin;
+      if (origin && origin !== corsOrigin) {
+        res.status(403).json({ error: "Origin not allowed" });
+        return;
+      }
+      next();
+    });
+  }
+
+  // Bearer token authentication
+  if (token) {
+    app.use((req, res, next) => {
+      const auth = req.headers.authorization;
+      if (auth !== `Bearer ${token}`) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      next();
+    });
+  }
 
   app.use(express.json());
 
@@ -166,6 +217,15 @@ async function runHttp() {
 
   app.listen(port, host, () => {
     console.error(`platter MCP server running on http://${host}:${port}/mcp (cwd: ${cwd})`);
+    if (token) {
+      if (values["auth-token"]) {
+        console.error("Auth: bearer token (provided via --auth-token)");
+      } else {
+        console.error(`Auth token: ${token}`);
+      }
+    } else {
+      console.error("Auth: disabled (--no-auth)");
+    }
   });
 }
 

@@ -48,8 +48,24 @@ Options:
       --host <address>           HTTP bind address (default: 127.0.0.1)
       --cwd <path>               Working directory for tools (default: current directory)
       --cors-origin <origin>     Allowed CORS origin (default: * — reflects request origin)
+      --auth-token <token>       Bearer token for HTTP auth (auto-generated if omitted)
+      --no-auth                  Disable bearer token authentication
   -h, --help                     Show help message
   -v, --version                  Show version number
+```
+
+### Authentication
+
+In HTTP mode, platter requires a bearer token on every request (`Authorization: Bearer <token>` header). By default a random token is generated at startup and printed to stderr. You can also provide your own:
+
+```bash
+platter -t http --auth-token my-secret-token
+```
+
+To disable authentication entirely (e.g. behind a reverse proxy that handles auth):
+
+```bash
+platter -t http --no-auth
 ```
 
 ### Stdio mode
@@ -86,6 +102,8 @@ platter -t http --cors-origin https://myapp.example.com
 ```
 
 Sessions are managed via the `Mcp-Session-Id` header per the StreamableHTTP spec.
+
+The server validates the `Host` header to prevent [DNS rebinding attacks](https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-w48q-cv73-mx4w). When `--cors-origin` is set, the `Origin` header is also validated server-side (not just via CORS response headers).
 
 ## Build
 
