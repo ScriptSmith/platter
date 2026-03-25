@@ -1,0 +1,16 @@
+FROM oven/bun:latest AS build
+WORKDIR /app
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
+COPY src/ src/
+COPY tsconfig.json ./
+RUN bun build src/index.ts --compile --outfile=platter
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ripgrep ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /app/platter /usr/local/bin/platter
+WORKDIR /work
+EXPOSE 3100
+ENTRYPOINT ["platter"]

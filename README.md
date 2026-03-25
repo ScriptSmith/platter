@@ -29,6 +29,15 @@ chmod +x platter-linux-x64
 ./platter-linux-x64 -t http               # HTTP mode on :3100
 ```
 
+### Docker
+
+```bash
+docker run --rm -i ghcr.io/scriptsmith/platter             # stdio mode
+docker run --rm -p 3100:3100 ghcr.io/scriptsmith/platter -t http --host 0.0.0.0  # HTTP mode
+```
+
+See [Docker](#docker-1) below for mounting paths, networking, installing extra software, and building custom images.
+
 ### From source
 
 ```bash
@@ -190,7 +199,7 @@ The server validates the `Host` header to prevent [DNS rebinding attacks](https:
 - **Glob/grep search scope.** `--allow-path` validates the search directory for glob and grep, but results within that directory tree may include symlinks pointing outside it. The content of those symlink targets could be returned in grep output or listed by glob.
 - **No process-level sandboxing.** All restrictions are enforced in application code within the platter process. They do not use OS-level mechanisms (seccomp, namespaces, pledge, etc.). A vulnerability in platter itself, Bun, or a dependency could bypass all restrictions.
 
-For high-security deployments, combine these restrictions with OS-level isolation (containers, VMs, dedicated users with limited filesystem permissions).
+For stronger isolation, use the just-bash sandbox, a Docker container, or both.
 
 ### Sandbox mode (just-bash)
 
@@ -230,6 +239,177 @@ platter --sandbox --sandbox-allow-url "https://api.github.com" --sandbox-allow-u
 - **Not full bash.** just-bash is a TypeScript reimplementation — some edge cases may behave differently from GNU bash.
 - **No native binaries.** Commands like `git`, `node`, `docker`, `rg`, `python` are not available. Only bash builtins and just-bash's built-in command set work.
 - **Beta software.** just-bash is under active development. Test your workflows before relying on it in production.
+
+### Container isolation (Docker)
+
+Running platter inside a Docker container provides OS-level isolation via Linux namespaces and cgroups. The container boundary limits what the bash tool can access — even unrestricted commands can only reach the filesystems and network that the container exposes.
+
+```bash
+# Minimal: no host filesystem, no network
+docker run --rm -i --network none ghcr.io/scriptsmith/platter
+
+# Read-only project access, no bash
+docker run --rm -p 3100:3100 \
+  -v /home/user/project:/work:ro \
+  ghcr.io/scriptsmith/platter -t http --host 0.0.0.0 --tools read,glob,grep
+
+# Full tools, scoped to a mounted directory
+docker run --rm -p 3100:3100 \
+  -v /home/user/project:/work \
+  ghcr.io/scriptsmith/platter -t http --host 0.0.0.0 --allow-path /work
+```
+
+#### What the container enforces
+
+- **Filesystem boundary.** Only explicitly mounted paths (`-v`) are visible. Even with bash enabled, commands cannot read or write host paths that aren't mounted.
+- **Network boundary.** `--network none` completely disables networking. Without it, the container has outbound access but no access to host-only services unless `--network host` is used.
+- **Process isolation.** Processes inside the container cannot see or signal host processes.
+- **Resource limits.** Docker's `--memory`, `--cpus`, and `--pids-limit` flags can cap resource usage to prevent denial of service.
+
+#### Combining sandbox and container
+
+The just-bash sandbox and Docker container address different layers. Used together, they provide defense in depth:
+
+| Layer | Protects against |
+|---|---|
+| **just-bash sandbox** | Arbitrary native process execution — no `git`, `curl`, `rm`, etc. Commands run in a TypeScript interpreter, not the OS shell. |
+| **Docker container** | Host filesystem/network access — even if the sandbox has a bug or is bypassed, the container limits blast radius to mounted paths and allowed networks. |
+
+```bash
+# Maximum isolation: sandbox inside a container, overlay fs, no network
+docker run --rm -i --network none \
+  -v /home/user/project:/work:ro \
+  ghcr.io/scriptsmith/platter --sandbox --sandbox-fs overlay
+
+# Sandbox with controlled network access inside a container
+docker run --rm -p 3100:3100 \
+  -v /home/user/project:/work \
+  ghcr.io/scriptsmith/platter -t http --host 0.0.0.0 \
+    --sandbox --sandbox-allow-url "https://api.github.com"
+```
+
+For the highest security posture, also run the container as a non-root user (`--user`), drop all capabilities (`--cap-drop ALL`), and set the filesystem read-only (`--read-only`) with a tmpdir for any needed writes:
+
+```bash
+docker run --rm -p 3100:3100 \
+  --user 1000:1000 \
+  --cap-drop ALL \
+  --read-only --tmpfs /tmp \
+  -v /home/user/project:/work \
+  ghcr.io/scriptsmith/platter -t http --host 0.0.0.0 --sandbox
+```
+
+See [Docker](#docker-1) for full usage instructions including mounting paths, networking, and building custom images.
+
+## Docker
+
+The Docker image is based on Debian Bookworm (slim) and includes ripgrep. Multi-arch images (`linux/amd64`, `linux/arm64`) are published to GitHub Container Registry on every tagged release.
+
+```bash
+docker pull ghcr.io/scriptsmith/platter           # latest release
+docker pull ghcr.io/scriptsmith/platter:1.0.0      # specific version
+```
+
+### Running in stdio mode
+
+Pipe JSON-RPC messages via stdin/stdout:
+
+```bash
+docker run --rm -i ghcr.io/scriptsmith/platter
+```
+
+### Running in HTTP mode
+
+Bind to `0.0.0.0` inside the container so the port is reachable from the host:
+
+```bash
+docker run --rm -p 3100:3100 ghcr.io/scriptsmith/platter -t http --host 0.0.0.0
+```
+
+### Mounting paths
+
+Mount host directories into the container and use `--cwd` or `--allow-path` to give platter access:
+
+```bash
+# Mount a project directory as the working directory
+docker run --rm -p 3100:3100 \
+  -v /home/user/project:/work \
+  ghcr.io/scriptsmith/platter -t http --host 0.0.0.0
+
+# Mount read-only
+docker run --rm -p 3100:3100 \
+  -v /home/user/project:/work:ro \
+  ghcr.io/scriptsmith/platter -t http --host 0.0.0.0 --tools read,glob,grep
+
+# Mount multiple directories with path restrictions
+docker run --rm -p 3100:3100 \
+  -v /home/user/project:/project \
+  -v /tmp/scratch:/scratch \
+  ghcr.io/scriptsmith/platter -t http --host 0.0.0.0 \
+    --cwd /project \
+    --allow-path /project --allow-path /scratch
+```
+
+### Networking
+
+By default containers have full outbound network access. You can restrict this with Docker's network options:
+
+```bash
+# No network access (file-only tools)
+docker run --rm --network none -i ghcr.io/scriptsmith/platter
+
+# Access host services (e.g. a local database)
+docker run --rm -p 3100:3100 --network host ghcr.io/scriptsmith/platter -t http --host 0.0.0.0
+```
+
+### Installing additional software at runtime
+
+The image uses Debian, so you can install packages with `apt-get` at runtime. This is useful for quick experiments but adds startup latency — for production use, build a custom image instead (see below).
+
+```bash
+docker run --rm -p 3100:3100 ghcr.io/scriptsmith/platter \
+  bash -c "apt-get update && apt-get install -y git nodejs && exec platter -t http --host 0.0.0.0"
+```
+
+Or interactively:
+
+```bash
+docker run --rm -it --entrypoint bash ghcr.io/scriptsmith/platter
+# inside the container:
+apt-get update && apt-get install -y git python3
+platter -t http --host 0.0.0.0
+```
+
+### Building a custom image
+
+Layer additional tools on top of the platter image for a ready-to-use environment:
+
+```dockerfile
+FROM ghcr.io/scriptsmith/platter:latest
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      git \
+      curl \
+      python3 \
+      nodejs \
+      npm \
+ && rm -rf /var/lib/apt/lists/*
+```
+
+Build and run:
+
+```bash
+docker build -t my-platter .
+docker run --rm -p 3100:3100 -v ~/project:/work my-platter -t http --host 0.0.0.0
+```
+
+### Building the image locally
+
+```bash
+docker build -t platter .
+docker run --rm -i platter
+```
 
 ## Build
 
