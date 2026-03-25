@@ -78,4 +78,27 @@ describe("editTool", () => {
     expect(raw).toContain("\r\n");
     expect(raw).toContain("goodbye world");
   });
+
+  it("replace_all replaces all occurrences", async () => {
+    await writeFile(join(dir, "test.txt"), "foo bar foo baz foo\n");
+    const result = await editTool({ path: "test.txt", old_text: "foo", new_text: "qux", replace_all: true }, dir);
+    expect(result).toContain("Successfully edited");
+    const content = await readFile(join(dir, "test.txt"), "utf-8");
+    expect(content).toBe("qux bar qux baz qux\n");
+  });
+
+  it("replace_all works with single occurrence", async () => {
+    await writeFile(join(dir, "test.txt"), "hello world\n");
+    const result = await editTool({ path: "test.txt", old_text: "hello", new_text: "goodbye", replace_all: true }, dir);
+    expect(result).toContain("Successfully edited");
+    const content = await readFile(join(dir, "test.txt"), "utf-8");
+    expect(content).toBe("goodbye world\n");
+  });
+
+  it("replace_all with no match throws error", async () => {
+    await writeFile(join(dir, "test.txt"), "hello world\n");
+    expect(editTool({ path: "test.txt", old_text: "xyz", new_text: "abc", replace_all: true }, dir)).rejects.toThrow(
+      "Could not find",
+    );
+  });
 });

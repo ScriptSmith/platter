@@ -2,7 +2,7 @@
   "name": "platter",
   "version": "1.0.0",
   "type": "module",
-  "description": "MCP server providing Read, Write, Edit, and Bash tools",
+  "description": "MCP server providing Read, Write, Edit, Bash, Glob, and Grep tools",
   "scripts": {
     "format": "biome format --write src/ tests/",
     "format:check": "biome format src/ tests/",

@@ -188,7 +188,7 @@ function generateDiffString(oldContent: string, newContent: string, contextLines
 // --- Main edit tool ---
 
 export async function editTool(
-  args: { path: string; old_text: string; new_text: string },
+  args: { path: string; old_text: string; new_text: string; replace_all?: boolean },
   cwd: string,
 ): Promise<string> {
   const absolutePath = resolvePath(args.path, cwd);
@@ -215,29 +215,42 @@ export async function editTool(
     );
   }
 
-  // Check for multiple occurrences
-  if (matchResult.usedFuzzyMatch) {
-    const fuzzyContent = normalizeForFuzzyMatch(normalizedContent);
-    const fuzzyOldText = normalizeForFuzzyMatch(normalizedOldText);
-    const occurrences = fuzzyContent.split(fuzzyOldText).length - 1;
-    if (occurrences > 1) {
-      throw new Error(
-        `Found ${occurrences} occurrences of the text in ${args.path}. The text must be unique. Provide more context to make it unique.`,
-      );
-    }
-  } else {
-    const occurrences = normalizedContent.split(normalizedOldText).length - 1;
-    if (occurrences > 1) {
-      throw new Error(
-        `Found ${occurrences} occurrences of the text in ${args.path}. The text must be unique. Provide more context to make it unique.`,
-      );
-    }
-  }
+  let newContent: string;
 
-  const newContent =
-    normalizedContent.substring(0, matchResult.originalIndex) +
-    normalizedNewText +
-    normalizedContent.substring(matchResult.originalIndex + matchResult.originalMatchLength);
+  if (args.replace_all) {
+    // Replace all occurrences
+    if (matchResult.usedFuzzyMatch) {
+      // For fuzzy matches with replace_all, we can only do exact replacements
+      // on the normalized form — fall back to replacing all exact matches
+      // after confirming at least one exists via fuzzy
+      throw new Error("replace_all is not supported with fuzzy matching. Ensure old_text matches exactly.");
+    }
+    newContent = normalizedContent.split(normalizedOldText).join(normalizedNewText);
+  } else {
+    // Single replacement — check for multiple occurrences
+    if (matchResult.usedFuzzyMatch) {
+      const fuzzyContent = normalizeForFuzzyMatch(normalizedContent);
+      const fuzzyOldText = normalizeForFuzzyMatch(normalizedOldText);
+      const occurrences = fuzzyContent.split(fuzzyOldText).length - 1;
+      if (occurrences > 1) {
+        throw new Error(
+          `Found ${occurrences} occurrences of the text in ${args.path}. The text must be unique. Provide more context to make it unique.`,
+        );
+      }
+    } else {
+      const occurrences = normalizedContent.split(normalizedOldText).length - 1;
+      if (occurrences > 1) {
+        throw new Error(
+          `Found ${occurrences} occurrences of the text in ${args.path}. The text must be unique. Provide more context to make it unique.`,
+        );
+      }
+    }
+
+    newContent =
+      normalizedContent.substring(0, matchResult.originalIndex) +
+      normalizedNewText +
+      normalizedContent.substring(matchResult.originalIndex + matchResult.originalMatchLength);
+  }
 
   if (normalizedContent === newContent) {
     throw new Error(`No changes made to ${args.path}. The replacement produced identical content.`);

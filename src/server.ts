@@ -3,6 +3,8 @@ import { z } from "zod";
 import packageJson from "../package.json";
 import { bashTool } from "./tools/bash.js";
 import { editTool } from "./tools/edit.js";
+import { globTool } from "./tools/glob.js";
+import { grepTool } from "./tools/grep.js";
 import { readTool } from "./tools/read.js";
 import { writeTool } from "./tools/write.js";
 
@@ -72,6 +74,7 @@ export function createServer(cwd: string): McpServer {
         path: z.string().describe("Path to the file to edit (relative or absolute)"),
         old_text: z.string().describe("Exact text to find and replace (must match exactly)"),
         new_text: z.string().describe("New text to replace the old text with"),
+        replace_all: z.boolean().optional().describe("Replace all occurrences of old_text (default false)"),
       },
       annotations: {
         readOnlyHint: false,
@@ -106,6 +109,78 @@ export function createServer(cwd: string): McpServer {
     async (args) => {
       try {
         const result = await bashTool(args, cwd);
+        return { content: [{ type: "text", text: result }] };
+      } catch (err: any) {
+        return { content: [{ type: "text", text: err.message }], isError: true };
+      }
+    },
+  );
+
+  server.registerTool(
+    "glob",
+    {
+      title: "Glob",
+      description:
+        "Fast file pattern matching. Returns file paths matching a glob pattern, sorted alphabetically. Supports patterns like '**/*.ts', 'src/**/*.tsx', '*.json'.",
+      inputSchema: {
+        pattern: z.string().describe("Glob pattern to match files against (e.g. '**/*.ts')"),
+        path: z
+          .string()
+          .optional()
+          .describe("Directory to search in (relative or absolute). Defaults to working directory."),
+      },
+      annotations: {
+        readOnlyHint: true,
+      },
+    },
+    async (args) => {
+      try {
+        const result = await globTool(args, cwd);
+        return { content: [{ type: "text", text: result }] };
+      } catch (err: any) {
+        return { content: [{ type: "text", text: err.message }], isError: true };
+      }
+    },
+  );
+
+  server.registerTool(
+    "grep",
+    {
+      title: "Grep",
+      description:
+        "Search file contents using ripgrep. Supports regex patterns, file filtering, and multiple output modes. Requires ripgrep (rg) to be installed.",
+      inputSchema: {
+        pattern: z.string().describe("Regular expression pattern to search for"),
+        path: z
+          .string()
+          .optional()
+          .describe("File or directory to search in (relative or absolute). Defaults to working directory."),
+        glob: z.string().optional().describe("Glob pattern to filter files (e.g. '*.js', '*.{ts,tsx}')"),
+        output_mode: z
+          .enum(["content", "files_with_matches", "count"])
+          .optional()
+          .describe(
+            "Output mode: 'content' shows matching lines, 'files_with_matches' shows file paths (default), 'count' shows match counts per file",
+          ),
+        context: z
+          .number()
+          .optional()
+          .describe("Number of lines to show before and after each match (content mode only)"),
+        before_context: z.number().optional().describe("Number of lines to show before each match (content mode only)"),
+        after_context: z.number().optional().describe("Number of lines to show after each match (content mode only)"),
+        case_insensitive: z.boolean().optional().describe("Case insensitive search (default false)"),
+        fixed_strings: z
+          .boolean()
+          .optional()
+          .describe("Treat pattern as a literal string, not a regex (default false)"),
+      },
+      annotations: {
+        readOnlyHint: true,
+      },
+    },
+    async (args) => {
+      try {
+        const result = await grepTool(args, cwd);
         return { content: [{ type: "text", text: result }] };
       } catch (err: any) {
         return { content: [{ type: "text", text: err.message }], isError: true };

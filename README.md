@@ -2,7 +2,7 @@
 
 *Your computer, served on a platter.*
 
-MCP server that exposes **Read**, **Write**, **Edit**, and **Bash** tools over Stdio and StreamableHTTP transports. Built with [Bun](https://bun.sh), compiles to standalone executables with zero runtime dependencies.
+MCP server that exposes **Read**, **Write**, **Edit**, **Bash**, **Glob**, and **Grep** tools over Stdio and StreamableHTTP transports. Built with [Bun](https://bun.sh), compiles to standalone executables. The **grep** tool requires [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`) to be installed on the host.
 
 Designed to be used by browser-based (or any MCP-compatible) agents — like [Hadrian](https://github.com/ScriptSmith/hadrian) — to control a computer.
 
@@ -12,8 +12,10 @@ Designed to be used by browser-based (or any MCP-compatible) agents — like [Ha
 |------|-------------|
 | **read** | Read file contents with pagination (offset/limit). Truncates at 2000 lines or 50KB. |
 | **write** | Create or overwrite files. Auto-creates parent directories. |
-| **edit** | Find-and-replace with exact (or fuzzy Unicode) matching. Requires a unique match. Returns a unified diff. |
+| **edit** | Find-and-replace with exact (or fuzzy Unicode) matching. Requires a unique match, or use `replace_all` to replace every occurrence. Returns a unified diff. |
 | **bash** | Execute shell commands with optional timeout. Output truncated to last 2000 lines or 50KB. |
+| **glob** | Fast file pattern matching. Returns paths matching a glob pattern (e.g. `**/*.ts`). |
+| **grep** | Search file contents using [ripgrep](https://github.com/BurntSushi/ripgrep). Supports regex, file filtering, context lines, and multiple output modes. Requires `rg` to be installed. |
 
 ## Quick start
 
