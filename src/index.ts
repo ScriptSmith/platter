@@ -36,6 +36,7 @@ Options:
 
 Process management:
       --max-processes <number>   Max concurrent bash processes per session (default: 20)
+      --max-sessions <number>    Max concurrent HTTP sessions (default: unlimited)
 
 Restrictions:
       --tools <list>             Comma-separated tools to enable (default: all)
@@ -81,6 +82,7 @@ const { values } = parseArgs({
     "tls-cert": { type: "string" },
     "tls-key": { type: "string" },
     "max-processes": { type: "string", default: "20" },
+    "max-sessions": { type: "string" },
   },
 });
 
@@ -108,6 +110,13 @@ const maxProcesses = parseInt(values["max-processes"]!, 10);
 
 if (Number.isNaN(maxProcesses) || maxProcesses <= 0) {
   console.error(`Error: invalid --max-processes value "${values["max-processes"]}". Must be a positive number.\n`);
+  process.exit(1);
+}
+
+const maxSessions = values["max-sessions"] ? parseInt(values["max-sessions"], 10) : undefined;
+
+if (maxSessions !== undefined && (Number.isNaN(maxSessions) || maxSessions <= 0)) {
+  console.error(`Error: invalid --max-sessions value "${values["max-sessions"]}". Must be a positive number.\n`);
   process.exit(1);
 }
 
@@ -179,6 +188,9 @@ function logRestrictions() {
   }
   if (security.allowedCommands) {
     console.error(`Allowed commands: ${values["allow-command"]!.join(", ")}`);
+  }
+  if (maxSessions !== undefined) {
+    console.error(`Max sessions: ${maxSessions}`);
   }
   if (security.sandbox?.enabled) {
     console.error(`Sandbox: enabled (fs: ${security.sandbox.fsMode})`);
@@ -324,6 +336,12 @@ async function runHttp() {
 
     if (sessionId && !sessions.has(sessionId)) {
       res.status(404).json({ error: "Session not found" });
+      return;
+    }
+
+    // Enforce session limit
+    if (maxSessions !== undefined && sessions.size >= maxSessions) {
+      res.status(503).json({ error: "Too many sessions" });
       return;
     }
 
