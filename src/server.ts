@@ -14,7 +14,6 @@ import { writeTool } from "./tools/write.js";
 import { resolvePath } from "./utils.js";
 
 export interface CreateServerOpts {
-  softTimeoutMs?: number;
   maxProcesses?: number;
 }
 
@@ -141,10 +140,10 @@ export function createServer(
       ? "Execute a bash command in a sandboxed environment (just-bash). Returns stdout and stderr combined. Output is truncated to the last 2000 lines or 50KB. Optionally provide a timeout in seconds. Note: sandbox does not support native binaries — only bash builtins and just-bash built-in commands."
       : `Execute a bash command, or manage a running process.
 
-To start a command: provide 'command' (and optional 'timeout' in seconds as a hard limit).
+To start a command: provide 'command' and optional 'timeout' in seconds.
 Returns stdout/stderr combined, truncated to last 2000 lines or 50KB.
 
-Long-running commands return partial output after a soft timeout with the process pid.
+If a timeout is set and the command hasn't finished, partial output is returned with the process pid.
 Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to terminate it.`;
 
     const destructiveHint = sandboxEnabled ? security.sandbox!.fsMode === "readwrite" : true;
@@ -183,7 +182,12 @@ Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to termi
           inputSchema: {
             command: z.string().optional().describe("Bash command to execute (required to start a new process)"),
             pid: z.number().optional().describe("PID of a running process to reattach to or kill"),
-            timeout: z.number().optional().describe("Hard timeout in seconds (optional, no default timeout)"),
+            timeout: z
+              .number()
+              .optional()
+              .describe(
+                "Timeout in seconds. If the command hasn't finished by then, partial output is returned with the process pid.",
+              ),
             kill: z.boolean().optional().describe("Kill the process specified by pid"),
           },
           annotations: {
@@ -196,7 +200,6 @@ Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to termi
             if (args.command) checkCommand(args.command);
             const result = await bashTool(args, cwd, {
               registry,
-              softTimeoutMs: opts?.softTimeoutMs,
               signal: extra.signal,
             });
             return { content: [{ type: "text", text: result }] };

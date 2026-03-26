@@ -56,11 +56,8 @@ describe("bashTool with registry", () => {
   });
 
   it("pid reattach workflow", async () => {
-    // Start a long command with short soft timeout
-    const result1 = await bashTool({ command: "echo start && sleep 1 && echo done" }, dir, {
-      registry,
-      softTimeoutMs: 200,
-    });
+    // Start a long command with a short timeout so it returns partial output
+    const result1 = await bashTool({ command: "echo start && sleep 2 && echo done", timeout: 0.2 }, dir, { registry });
 
     expect(result1).toContain("start");
     expect(result1).toContain("Process still running");
@@ -71,16 +68,13 @@ describe("bashTool with registry", () => {
     const pid = parseInt(pidMatch![1], 10);
 
     // Reattach and wait for completion
-    const result2 = await bashTool({ pid }, dir, { registry, softTimeoutMs: 5000 });
+    const result2 = await bashTool({ pid, timeout: 5 }, dir, { registry });
     expect(result2).toContain("done");
   });
 
   it("pid kill workflow", async () => {
-    // Start a long command
-    const result1 = await bashTool({ command: "sleep 60" }, dir, {
-      registry,
-      softTimeoutMs: 200,
-    });
+    // Start a long command with short timeout
+    const result1 = await bashTool({ command: "sleep 60", timeout: 0.2 }, dir, { registry });
 
     expect(result1).toContain("Process still running");
     const pidMatch = result1.match(/pid: (\d+)/);
@@ -101,7 +95,7 @@ describe("bashTool with registry", () => {
   });
 
   it("spawn with registry completes normally for fast commands", async () => {
-    const result = await bashTool({ command: "echo fast" }, dir, { registry, softTimeoutMs: 5000 });
+    const result = await bashTool({ command: "echo fast", timeout: 5 }, dir, { registry });
     expect(result).toContain("fast");
     expect(result).not.toContain("Process still running");
   });

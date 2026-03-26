@@ -18,7 +18,6 @@ interface TrackedProcess {
   currentBufferBytes: number;
   lastReadOffset: number;
   completionPromise: Promise<void>;
-  hardTimeoutHandle?: NodeJS.Timeout;
 }
 
 export interface WaitResult {
@@ -51,7 +50,7 @@ export class ProcessRegistry {
     return count;
   }
 
-  register(child: ChildProcess, command: string, hardTimeoutMs?: number): number {
+  register(child: ChildProcess, command: string): number {
     const pid = child.pid!;
 
     // Evict stale entry on PID collision
@@ -110,7 +109,6 @@ export class ProcessRegistry {
       tracked.completedAt = Date.now();
       tracked.exitCode = code;
       tracked.exitSignal = signal;
-      if (tracked.hardTimeoutHandle) clearTimeout(tracked.hardTimeoutHandle);
       resolveCompletion();
     });
 
@@ -119,17 +117,8 @@ export class ProcessRegistry {
         tracked.state = "completed";
       }
       tracked.completedAt = Date.now();
-      if (tracked.hardTimeoutHandle) clearTimeout(tracked.hardTimeoutHandle);
       resolveCompletion();
     });
-
-    if (hardTimeoutMs !== undefined && hardTimeoutMs > 0) {
-      tracked.hardTimeoutHandle = setTimeout(() => {
-        if (tracked.state === "running") {
-          this.kill(pid);
-        }
-      }, hardTimeoutMs);
-    }
 
     this.processes.set(pid, tracked);
     return pid;

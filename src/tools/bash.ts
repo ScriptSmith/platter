@@ -17,7 +17,6 @@ export interface BashArgs {
 
 export interface BashOpts {
   registry?: ProcessRegistry;
-  softTimeoutMs?: number;
   signal?: AbortSignal;
 }
 
@@ -73,11 +72,12 @@ export async function bashTool(args: BashArgs, cwd: string, opts?: BashOpts): Pr
   // Reattach mode
   if (hasPid) {
     if (!opts?.registry) throw new Error("Process management requires a registry.");
-    const result = await opts.registry.waitForOutput(args.pid!, opts.softTimeoutMs, opts.signal);
+    const timeoutMs = args.timeout ? args.timeout * 1000 : undefined;
+    const result = await opts.registry.waitForOutput(args.pid!, timeoutMs, opts.signal);
     return formatWaitResult(result);
   }
 
-  // Spawn mode — no registry: legacy blocking behavior
+  // Spawn mode — no registry: use legacy blocking behavior
   if (!opts?.registry) {
     return legacySpawn({ command: args.command!, timeout: args.timeout }, cwd);
   }
@@ -95,9 +95,9 @@ export async function bashTool(args: BashArgs, cwd: string, opts?: BashOpts): Pr
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-  const hardTimeoutMs = args.timeout ? args.timeout * 1000 : undefined;
-  const pid = opts.registry.register(child, args.command!, hardTimeoutMs);
-  const result = await opts.registry.waitForOutput(pid, opts.softTimeoutMs, opts.signal);
+  const timeoutMs = args.timeout ? args.timeout * 1000 : undefined;
+  const pid = opts.registry.register(child, args.command!);
+  const result = await opts.registry.waitForOutput(pid, timeoutMs, opts.signal);
   return formatWaitResult(result);
 }
 

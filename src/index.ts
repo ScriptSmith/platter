@@ -35,8 +35,6 @@ Options:
       --tls-key <path>           TLS private key file (PEM)
 
 Process management:
-      --soft-timeout <seconds>   Soft timeout for bash commands (default: 30)
-      --no-soft-timeout          Disable soft timeouts (original blocking behavior)
       --max-processes <number>   Max concurrent bash processes per session (default: 20)
 
 Restrictions:
@@ -82,8 +80,6 @@ const { values } = parseArgs({
     "sandbox-allow-url": { type: "string", multiple: true },
     "tls-cert": { type: "string" },
     "tls-key": { type: "string" },
-    "soft-timeout": { type: "string", default: "30" },
-    "no-soft-timeout": { type: "boolean", default: false },
     "max-processes": { type: "string", default: "20" },
   },
 });
@@ -108,14 +104,7 @@ if ((values["tls-cert"] && !values["tls-key"]) || (!values["tls-cert"] && values
 
 // --- Process management ---
 
-const noSoftTimeout = values["no-soft-timeout"] as boolean;
-const softTimeoutMs = noSoftTimeout ? undefined : parseInt(values["soft-timeout"]!, 10) * 1000;
 const maxProcesses = parseInt(values["max-processes"]!, 10);
-
-if (!noSoftTimeout && (Number.isNaN(softTimeoutMs!) || softTimeoutMs! <= 0)) {
-  console.error(`Error: invalid --soft-timeout value "${values["soft-timeout"]}". Must be a positive number.\n`);
-  process.exit(1);
-}
 
 if (Number.isNaN(maxProcesses) || maxProcesses <= 0) {
   console.error(`Error: invalid --max-processes value "${values["max-processes"]}". Must be a positive number.\n`);
@@ -179,7 +168,7 @@ if (security.allowedPaths && bashEnabled && !security.allowedCommands && !securi
 }
 
 const cwd = values.cwd!;
-const serverOpts = { softTimeoutMs, maxProcesses };
+const serverOpts = { maxProcesses };
 
 function logRestrictions() {
   if (security.allowedTools) {

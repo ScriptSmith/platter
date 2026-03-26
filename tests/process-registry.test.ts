@@ -88,15 +88,6 @@ describe("ProcessRegistry", () => {
     expect(registry.runningCount).toBe(0);
   });
 
-  it("hard timeout kills process automatically", async () => {
-    const child = spawnInDir("sleep 60", dir);
-    const pid = registry.register(child, "sleep 60", 500);
-
-    const result = await registry.waitForOutput(pid, 2000);
-    expect(result.done).toBe(true);
-    expect(result.exitSignal).toBeTruthy();
-  });
-
   it("enforces concurrency limit", () => {
     const small = new ProcessRegistry({ maxConcurrent: 2 });
     try {
