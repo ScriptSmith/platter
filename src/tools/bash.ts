@@ -56,7 +56,7 @@ export async function bashTool(args: { command: string; timeout?: number }, cwd:
       reject(err);
     });
 
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       if (timeoutHandle) clearTimeout(timeoutHandle);
 
       const fullOutput = Buffer.concat(chunks).toString("utf-8");
@@ -78,7 +78,10 @@ export async function bashTool(args: { command: string; timeout?: number }, cwd:
         outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(MAX_BYTES)} limit)]`;
       }
 
-      if (code !== 0 && code !== null) {
+      if (signal) {
+        outputText += `\n\nProcess was killed by ${signal}`;
+        reject(new Error(outputText));
+      } else if (code !== 0 && code !== null) {
         outputText += `\n\nCommand exited with code ${code}`;
         reject(new Error(outputText));
       } else {
