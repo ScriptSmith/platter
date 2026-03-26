@@ -69,7 +69,7 @@ export function createSandboxBash(
   config: SandboxConfig,
   allowedPaths: string[] | undefined,
   cwd: string,
-): (args: { command: string; timeout?: number }, execCwd: string) => Promise<string> {
+): (args: { command: string; timeout?: number }, execCwd: string, opts?: { signal?: AbortSignal }) => Promise<string> {
   const { fs, cwd: virtualCwd } = buildFilesystem(config, allowedPaths, cwd);
   const network = buildNetwork(config);
 
@@ -79,23 +79,38 @@ export function createSandboxBash(
     network,
   });
 
-  return async (args, _execCwd) => {
+  return async (args, _execCwd, opts?) => {
     const timeoutMs = args.timeout !== undefined && args.timeout > 0 ? args.timeout * 1000 : undefined;
-    const signal = timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined;
+    const timeoutSignal = timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined;
+
+    // Combine MCP cancellation signal with timeout signal
+    let signal: AbortSignal | undefined;
+    if (timeoutSignal && opts?.signal) {
+      signal = AbortSignal.any([timeoutSignal, opts.signal]);
+    } else {
+      signal = timeoutSignal ?? opts?.signal;
+    }
 
     let result: Awaited<ReturnType<typeof bash.exec>>;
     try {
       result = await bash.exec(args.command, { signal });
     } catch (err: any) {
-      // AbortSignal.timeout throws a DOMException with name "TimeoutError"
-      if (err.name === "TimeoutError" || signal?.aborted) {
+      if (opts?.signal?.aborted) {
+        throw new Error("Cancelled");
+      }
+      if (err.name === "TimeoutError" || timeoutSignal?.aborted) {
         throw new Error(`Command timed out after ${args.timeout} seconds`);
       }
       throw err;
     }
 
-    // Check if signal aborted after exec returned (just-bash may resolve rather than reject)
-    if (signal?.aborted) {
+    // Check cancellation first
+    if (opts?.signal?.aborted) {
+      throw new Error("Cancelled");
+    }
+
+    // Check if timeout signal aborted after exec returned
+    if (timeoutSignal?.aborted) {
       let output = result.stdout + (result.stderr ? (result.stdout ? "\n" : "") + result.stderr : "");
       if (output) output += "\n\n";
       output += `Command timed out after ${args.timeout} seconds`;

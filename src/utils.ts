@@ -1,6 +1,19 @@
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 
+export function killProcessTree(pid: number): void {
+  try {
+    // Kill entire process group
+    process.kill(-pid, "SIGTERM");
+  } catch {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // Already dead
+    }
+  }
+}
+
 export function resolvePath(path: string, cwd: string): string {
   let p = path;
   if (p === "~") return homedir();

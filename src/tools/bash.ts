@@ -1,27 +1,134 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { formatSize, MAX_BYTES, truncateTail } from "../utils.js";
+import type { ProcessRegistry, WaitResult } from "../process-registry.js";
+import { formatSize, killProcessTree, MAX_BYTES, truncateTail } from "../utils.js";
 
 function getShellConfig(): { shell: string; args: string[] } {
   const shell = process.env.SHELL || "/bin/bash";
-  // Use login + interactive-like shell to pick up user PATH/env
   return { shell, args: ["-c"] };
 }
 
-function killProcessTree(pid: number): void {
-  try {
-    // Kill entire process group
-    process.kill(-pid, "SIGTERM");
-  } catch {
-    try {
-      process.kill(pid, "SIGTERM");
-    } catch {
-      // Already dead
-    }
-  }
+export interface BashArgs {
+  command?: string;
+  pid?: number;
+  timeout?: number;
+  kill?: boolean;
 }
 
-export async function bashTool(args: { command: string; timeout?: number }, cwd: string): Promise<string> {
+export interface BashOpts {
+  registry?: ProcessRegistry;
+  softTimeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+function formatElapsed(ms: number): string {
+  const s = Math.round(ms / 1000);
+  return `${s}s`;
+}
+
+function formatCompletedOutput(result: WaitResult): string {
+  const truncation = truncateTail(result.output);
+  let outputText = truncation.content || "(no output)";
+
+  if (truncation.truncated) {
+    const startLine = truncation.totalLines - truncation.outputLines + 1;
+    const endLine = truncation.totalLines;
+    outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(MAX_BYTES)} limit)]`;
+  }
+
+  return outputText;
+}
+
+export async function bashTool(args: BashArgs, cwd: string, opts?: BashOpts): Promise<string> {
+  // Validation
+  const hasCommand = args.command !== undefined;
+  const hasPid = args.pid !== undefined;
+
+  if (hasCommand && hasPid) {
+    throw new Error("Provide 'command' or 'pid', not both.");
+  }
+  if (!hasCommand && !hasPid) {
+    throw new Error("Provide 'command' to start a new process or 'pid' to manage an existing one.");
+  }
+  if (args.kill && !hasPid) {
+    throw new Error("'kill' requires 'pid'.");
+  }
+
+  // Kill mode
+  if (hasPid && args.kill) {
+    if (!opts?.registry) throw new Error("Process management requires a registry.");
+    await opts.registry.kill(args.pid!);
+    const output = opts.registry.readNewOutput(args.pid!);
+    const truncation = truncateTail(output);
+    let outputText = truncation.content || "(no output)";
+    if (truncation.truncated) {
+      const startLine = truncation.totalLines - truncation.outputLines + 1;
+      const endLine = truncation.totalLines;
+      outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(MAX_BYTES)} limit)]`;
+    }
+    outputText += `\n\nProcess ${args.pid} terminated.`;
+    return outputText;
+  }
+
+  // Reattach mode
+  if (hasPid) {
+    if (!opts?.registry) throw new Error("Process management requires a registry.");
+    const result = await opts.registry.waitForOutput(args.pid!, opts.softTimeoutMs, opts.signal);
+    return formatWaitResult(result);
+  }
+
+  // Spawn mode — no registry: legacy blocking behavior
+  if (!opts?.registry) {
+    return legacySpawn({ command: args.command!, timeout: args.timeout }, cwd);
+  }
+
+  // Spawn mode — with registry
+  if (!existsSync(cwd)) {
+    throw new Error(`Working directory does not exist: ${cwd}`);
+  }
+
+  const { shell, args: shellArgs } = getShellConfig();
+  const child = spawn(shell, [...shellArgs, args.command!], {
+    cwd,
+    detached: true,
+    env: { ...process.env },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  const hardTimeoutMs = args.timeout ? args.timeout * 1000 : undefined;
+  const pid = opts.registry.register(child, args.command!, hardTimeoutMs);
+  const result = await opts.registry.waitForOutput(pid, opts.softTimeoutMs, opts.signal);
+  return formatWaitResult(result);
+}
+
+function formatWaitResult(result: WaitResult): string {
+  if (!result.done) {
+    // Soft timeout — return partial output with continuation hint
+    const truncation = truncateTail(result.output);
+    let outputText = truncation.content || "";
+    if (truncation.truncated) {
+      const startLine = truncation.totalLines - truncation.outputLines + 1;
+      const endLine = truncation.totalLines;
+      outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(MAX_BYTES)} limit)]`;
+    }
+    if (outputText) outputText += "\n\n";
+    outputText += `[Process still running (pid: ${result.pid}, elapsed: ${formatElapsed(result.elapsed)}). Call bash with pid to continue waiting, or with pid + kill to terminate.]`;
+    return outputText;
+  }
+
+  const outputText = formatCompletedOutput(result);
+
+  if (result.exitSignal) {
+    throw new Error(`${outputText}\n\nProcess was killed by ${result.exitSignal}`);
+  }
+  if (result.exitCode !== 0 && result.exitCode !== null) {
+    throw new Error(`${outputText}\n\nCommand exited with code ${result.exitCode}`);
+  }
+
+  return outputText;
+}
+
+function legacySpawn(args: { command: string; timeout?: number }, cwd: string): Promise<string> {
   if (!existsSync(cwd)) {
     throw new Error(`Working directory does not exist: ${cwd}`);
   }

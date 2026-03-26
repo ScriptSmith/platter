@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import packageJson from "../package.json";
+import { ProcessRegistry } from "./process-registry.js";
 import type { SecurityConfig, ToolName } from "./security.js";
 import { validateCommand, validatePath } from "./security.js";
 import { bashTool } from "./tools/bash.js";
@@ -12,11 +13,22 @@ import { createSandboxBash } from "./tools/sandbox-bash.js";
 import { writeTool } from "./tools/write.js";
 import { resolvePath } from "./utils.js";
 
-export function createServer(cwd: string, security: SecurityConfig = {}): McpServer {
+export interface CreateServerOpts {
+  softTimeoutMs?: number;
+  maxProcesses?: number;
+}
+
+export function createServer(
+  cwd: string,
+  security: SecurityConfig = {},
+  opts?: CreateServerOpts,
+): { server: McpServer; registry: ProcessRegistry } {
   const server = new McpServer({
     name: "platter",
     version: packageJson.version,
   });
+
+  const registry = new ProcessRegistry({ maxConcurrent: opts?.maxProcesses ?? 20 });
 
   const enabled = (name: ToolName) => !security.allowedTools || security.allowedTools.has(name);
 
@@ -48,7 +60,8 @@ export function createServer(cwd: string, security: SecurityConfig = {}): McpSer
           readOnlyHint: true,
         },
       },
-      async (args) => {
+      async (args, extra) => {
+        if (extra.signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], isError: true };
         try {
           await checkPath(args.path);
           const result = await readTool(args, cwd);
@@ -76,7 +89,8 @@ export function createServer(cwd: string, security: SecurityConfig = {}): McpSer
           destructiveHint: true,
         },
       },
-      async (args) => {
+      async (args, extra) => {
+        if (extra.signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], isError: true };
         try {
           await checkPath(args.path);
           const result = await writeTool(args, cwd);
@@ -106,7 +120,8 @@ export function createServer(cwd: string, security: SecurityConfig = {}): McpSer
           destructiveHint: false,
         },
       },
-      async (args) => {
+      async (args, extra) => {
+        if (extra.signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], isError: true };
         try {
           await checkPath(args.path);
           const result = await editTool(args, cwd);
@@ -124,34 +139,73 @@ export function createServer(cwd: string, security: SecurityConfig = {}): McpSer
 
     const bashDescription = sandboxEnabled
       ? "Execute a bash command in a sandboxed environment (just-bash). Returns stdout and stderr combined. Output is truncated to the last 2000 lines or 50KB. Optionally provide a timeout in seconds. Note: sandbox does not support native binaries — only bash builtins and just-bash built-in commands."
-      : "Execute a bash command. Returns stdout and stderr combined. Output is truncated to the last 2000 lines or 50KB. Optionally provide a timeout in seconds.";
+      : `Execute a bash command, or manage a running process.
+
+To start a command: provide 'command' (and optional 'timeout' in seconds as a hard limit).
+Returns stdout/stderr combined, truncated to last 2000 lines or 50KB.
+
+Long-running commands return partial output after a soft timeout with the process pid.
+Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to terminate it.`;
 
     const destructiveHint = sandboxEnabled ? security.sandbox!.fsMode === "readwrite" : true;
 
-    server.registerTool(
-      "bash",
-      {
-        title: "Bash",
-        description: bashDescription,
-        inputSchema: {
-          command: z.string().describe("Bash command to execute"),
-          timeout: z.number().optional().describe("Timeout in seconds (optional, no default timeout)"),
+    if (sandboxEnabled) {
+      server.registerTool(
+        "bash",
+        {
+          title: "Bash",
+          description: bashDescription,
+          inputSchema: {
+            command: z.string().describe("Bash command to execute"),
+            timeout: z.number().optional().describe("Timeout in seconds (optional, no default timeout)"),
+          },
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint,
+          },
         },
-        annotations: {
-          readOnlyHint: false,
-          destructiveHint,
+        async (args, extra) => {
+          try {
+            checkCommand(args.command);
+            const result = await sandboxBashFn!(args, cwd, { signal: extra.signal });
+            return { content: [{ type: "text", text: result }] };
+          } catch (err: any) {
+            return { content: [{ type: "text", text: err.message }], isError: true };
+          }
         },
-      },
-      async (args) => {
-        try {
-          checkCommand(args.command);
-          const result = sandboxBashFn ? await sandboxBashFn(args, cwd) : await bashTool(args, cwd);
-          return { content: [{ type: "text", text: result }] };
-        } catch (err: any) {
-          return { content: [{ type: "text", text: err.message }], isError: true };
-        }
-      },
-    );
+      );
+    } else {
+      server.registerTool(
+        "bash",
+        {
+          title: "Bash",
+          description: bashDescription,
+          inputSchema: {
+            command: z.string().optional().describe("Bash command to execute (required to start a new process)"),
+            pid: z.number().optional().describe("PID of a running process to reattach to or kill"),
+            timeout: z.number().optional().describe("Hard timeout in seconds (optional, no default timeout)"),
+            kill: z.boolean().optional().describe("Kill the process specified by pid"),
+          },
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint,
+          },
+        },
+        async (args, extra) => {
+          try {
+            if (args.command) checkCommand(args.command);
+            const result = await bashTool(args, cwd, {
+              registry,
+              softTimeoutMs: opts?.softTimeoutMs,
+              signal: extra.signal,
+            });
+            return { content: [{ type: "text", text: result }] };
+          } catch (err: any) {
+            return { content: [{ type: "text", text: err.message }], isError: true };
+          }
+        },
+      );
+    }
   }
 
   if (enabled("glob")) {
@@ -172,7 +226,8 @@ export function createServer(cwd: string, security: SecurityConfig = {}): McpSer
           readOnlyHint: true,
         },
       },
-      async (args) => {
+      async (args, extra) => {
+        if (extra.signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], isError: true };
         try {
           await checkPath(args.path ?? cwd);
           const result = await globTool(args, cwd);
@@ -223,10 +278,10 @@ export function createServer(cwd: string, security: SecurityConfig = {}): McpSer
           readOnlyHint: true,
         },
       },
-      async (args) => {
+      async (args, extra) => {
         try {
           await checkPath(args.path ?? cwd);
-          const result = await grepTool(args, cwd);
+          const result = await grepTool(args, cwd, extra.signal);
           return { content: [{ type: "text", text: result }] };
         } catch (err: any) {
           return { content: [{ type: "text", text: err.message }], isError: true };
@@ -235,5 +290,5 @@ export function createServer(cwd: string, security: SecurityConfig = {}): McpSer
     );
   }
 
-  return server;
+  return { server, registry };
 }

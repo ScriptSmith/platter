@@ -60,7 +60,7 @@ function buildRgArgs(args: GrepArgs, searchPath: string): string[] {
   return rgArgs;
 }
 
-export async function grepTool(args: GrepArgs, cwd: string): Promise<string> {
+export async function grepTool(args: GrepArgs, cwd: string, signal?: AbortSignal): Promise<string> {
   const searchPath = args.path ? resolvePath(args.path, cwd) : cwd;
 
   if (!existsSync(searchPath)) {
@@ -74,6 +74,16 @@ export async function grepTool(args: GrepArgs, cwd: string): Promise<string> {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
     });
+
+    if (signal) {
+      const onAbort = () => child.kill("SIGTERM");
+      if (signal.aborted) {
+        child.kill("SIGTERM");
+      } else {
+        signal.addEventListener("abort", onAbort, { once: true });
+        child.on("close", () => signal.removeEventListener("abort", onAbort));
+      }
+    }
 
     const chunks: Buffer[] = [];
     let totalBytes = 0;

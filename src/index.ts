@@ -13,6 +13,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
 import packageJson from "../package.json";
+import type { ProcessRegistry } from "./process-registry.js";
 import { ALL_TOOL_NAMES, type SandboxFsMode, type SecurityConfig, type ToolName } from "./security.js";
 import { createServer } from "./server.js";
 
@@ -32,6 +33,11 @@ Options:
       --no-auth                  Disable bearer token authentication
       --tls-cert <path>          TLS certificate file (PEM) — enables HTTPS
       --tls-key <path>           TLS private key file (PEM)
+
+Process management:
+      --soft-timeout <seconds>   Soft timeout for bash commands (default: 30)
+      --no-soft-timeout          Disable soft timeouts (original blocking behavior)
+      --max-processes <number>   Max concurrent bash processes per session (default: 20)
 
 Restrictions:
       --tools <list>             Comma-separated tools to enable (default: all)
@@ -76,6 +82,9 @@ const { values } = parseArgs({
     "sandbox-allow-url": { type: "string", multiple: true },
     "tls-cert": { type: "string" },
     "tls-key": { type: "string" },
+    "soft-timeout": { type: "string", default: "30" },
+    "no-soft-timeout": { type: "boolean", default: false },
+    "max-processes": { type: "string", default: "20" },
   },
 });
 
@@ -94,6 +103,22 @@ if (values["auth-token"] && values["no-auth"]) {
 if ((values["tls-cert"] && !values["tls-key"]) || (!values["tls-cert"] && values["tls-key"])) {
   console.error("Error: --tls-cert and --tls-key must be used together.\n");
   console.error(USAGE);
+  process.exit(1);
+}
+
+// --- Process management ---
+
+const noSoftTimeout = values["no-soft-timeout"] as boolean;
+const softTimeoutMs = noSoftTimeout ? undefined : parseInt(values["soft-timeout"]!, 10) * 1000;
+const maxProcesses = parseInt(values["max-processes"]!, 10);
+
+if (!noSoftTimeout && (Number.isNaN(softTimeoutMs!) || softTimeoutMs! <= 0)) {
+  console.error(`Error: invalid --soft-timeout value "${values["soft-timeout"]}". Must be a positive number.\n`);
+  process.exit(1);
+}
+
+if (Number.isNaN(maxProcesses) || maxProcesses <= 0) {
+  console.error(`Error: invalid --max-processes value "${values["max-processes"]}". Must be a positive number.\n`);
   process.exit(1);
 }
 
@@ -154,6 +179,7 @@ if (security.allowedPaths && bashEnabled && !security.allowedCommands && !securi
 }
 
 const cwd = values.cwd!;
+const serverOpts = { softTimeoutMs, maxProcesses };
 
 function logRestrictions() {
   if (security.allowedTools) {
@@ -174,15 +200,25 @@ function logRestrictions() {
 }
 
 async function runStdio() {
-  const server = createServer(cwd, security);
+  const { server, registry } = createServer(cwd, security, serverOpts);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(`platter MCP server running on stdio (cwd: ${cwd})`);
   logRestrictions();
+
+  const cleanup = () => {
+    registry.killAll().finally(() => {
+      registry.dispose();
+      process.exit(0);
+    });
+  };
+  process.on("SIGTERM", cleanup);
+  process.on("SIGINT", cleanup);
 }
 
 interface SessionEntry {
-  server: ReturnType<typeof createServer>;
+  server: ReturnType<typeof createServer>["server"];
+  registry: ProcessRegistry;
   transport: StreamableHTTPServerTransport;
   lastAccessed: number;
 }
@@ -272,6 +308,7 @@ async function runHttp() {
     const now = Date.now();
     for (const [id, session] of sessions) {
       if (now - session.lastAccessed > SESSION_TTL_MS) {
+        session.registry.killAll().then(() => session.registry.dispose());
         session.transport.close?.();
         sessions.delete(id);
       }
@@ -295,16 +332,20 @@ async function runHttp() {
     }
 
     // New session — create server + transport
-    const server = createServer(cwd, security);
+    const { server, registry } = createServer(cwd, security, serverOpts);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
       onsessioninitialized: (id) => {
-        sessions.set(id, { server, transport, lastAccessed: Date.now() });
+        sessions.set(id, { server, registry, transport, lastAccessed: Date.now() });
       },
     });
 
     transport.onclose = () => {
       if (transport.sessionId) {
+        const session = sessions.get(transport.sessionId);
+        if (session) {
+          session.registry.killAll().then(() => session.registry.dispose());
+        }
         sessions.delete(transport.sessionId);
       }
     };
@@ -335,6 +376,8 @@ async function runHttp() {
     const session = sessions.get(sessionId)!;
     session.lastAccessed = Date.now();
     await session.transport.handleRequest(req, res);
+    await session.registry.killAll();
+    session.registry.dispose();
     sessions.delete(sessionId);
   });
 
@@ -354,6 +397,17 @@ async function runHttp() {
     }
     logRestrictions();
   };
+
+  // Process-level cleanup for HTTP mode
+  const cleanupAllSessions = () => {
+    const promises: Promise<void>[] = [];
+    for (const session of sessions.values()) {
+      promises.push(session.registry.killAll().then(() => session.registry.dispose()));
+    }
+    Promise.all(promises).finally(() => process.exit(0));
+  };
+  process.on("SIGTERM", cleanupAllSessions);
+  process.on("SIGINT", cleanupAllSessions);
 
   if (useTls) {
     const cert = readFileSync(values["tls-cert"]!);
