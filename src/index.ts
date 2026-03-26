@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 
 import crypto from "node:crypto";
+import { readFileSync } from "node:fs";
+import https from "node:https";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
@@ -28,6 +30,8 @@ Options:
       --cors-origin <origin>     Allowed CORS origin (default: *)
       --auth-token <token>       Bearer token for HTTP auth (auto-generated if omitted)
       --no-auth                  Disable bearer token authentication
+      --tls-cert <path>          TLS certificate file (PEM) — enables HTTPS
+      --tls-key <path>           TLS private key file (PEM)
 
 Restrictions:
       --tools <list>             Comma-separated tools to enable (default: all)
@@ -70,6 +74,8 @@ const { values } = parseArgs({
     sandbox: { type: "boolean", default: false },
     "sandbox-fs": { type: "string", default: "readwrite" },
     "sandbox-allow-url": { type: "string", multiple: true },
+    "tls-cert": { type: "string" },
+    "tls-key": { type: "string" },
   },
 });
 
@@ -81,6 +87,12 @@ if (values.transport !== "stdio" && values.transport !== "http") {
 
 if (values["auth-token"] && values["no-auth"]) {
   console.error("Error: --auth-token and --no-auth are mutually exclusive.\n");
+  console.error(USAGE);
+  process.exit(1);
+}
+
+if ((values["tls-cert"] && !values["tls-key"]) || (!values["tls-cert"] && values["tls-key"])) {
+  console.error("Error: --tls-cert and --tls-key must be used together.\n");
   console.error(USAGE);
   process.exit(1);
 }
@@ -195,7 +207,12 @@ async function runHttp() {
   // Skip host validation for these — auth token still protects the server.
   if (LOCALHOST_HOSTS.has(host)) {
     app.use(localhostHostValidation());
-  } else if (!WILDCARD_HOSTS.has(host)) {
+  } else if (WILDCARD_HOSTS.has(host)) {
+    console.error(
+      `Warning: Server is binding to ${host} without DNS rebinding protection. ` +
+        "Use authentication to protect your server.",
+    );
+  } else {
     app.use(hostHeaderValidation([host]));
   }
 
@@ -321,8 +338,11 @@ async function runHttp() {
     sessions.delete(sessionId);
   });
 
-  app.listen(port, host, () => {
-    console.error(`platter MCP server running on http://${host}:${port}/mcp (cwd: ${cwd})`);
+  const useTls = values["tls-cert"] && values["tls-key"];
+  const protocol = useTls ? "https" : "http";
+
+  const onListening = () => {
+    console.error(`platter MCP server running on ${protocol}://${host}:${port}/mcp (cwd: ${cwd})`);
     if (token) {
       if (values["auth-token"]) {
         console.error("Auth: bearer token (provided via --auth-token)");
@@ -333,7 +353,15 @@ async function runHttp() {
       console.error("Auth: disabled (--no-auth)");
     }
     logRestrictions();
-  });
+  };
+
+  if (useTls) {
+    const cert = readFileSync(values["tls-cert"]!);
+    const key = readFileSync(values["tls-key"]!);
+    https.createServer({ cert, key }, app).listen(port, host, onListening);
+  } else {
+    app.listen(port, host, onListening);
+  }
 }
 
 if (values.transport === "http") {

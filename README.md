@@ -67,6 +67,8 @@ Options:
       --cors-origin <origin>     Allowed CORS origin (default: *)
       --auth-token <token>       Bearer token for HTTP auth (auto-generated if omitted)
       --no-auth                  Disable bearer token authentication
+      --tls-cert <path>          TLS certificate file (PEM) — enables HTTPS
+      --tls-key <path>           TLS private key file (PEM)
 
 Restrictions:
       --tools <list>             Comma-separated tools to enable (default: all)
@@ -144,6 +146,23 @@ To disable authentication entirely (e.g. behind a reverse proxy that handles aut
 platter -t http --no-auth
 ```
 
+### TLS (HTTPS)
+
+To serve over HTTPS, provide a PEM-encoded certificate and private key:
+
+```bash
+platter -t http --tls-cert cert.pem --tls-key key.pem
+```
+
+Both `--tls-cert` and `--tls-key` are required together. When provided, the server listens over HTTPS instead of plain HTTP.
+
+To generate a self-signed certificate for development or trusted internal use:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj '/CN=myserver'
+platter -t http --tls-cert cert.pem --tls-key key.pem
+```
+
 ### Stdio mode
 
 For use with Claude Desktop, Cursor, and other MCP clients that spawn a subprocess:
@@ -185,6 +204,7 @@ The server validates the `Host` header to prevent [DNS rebinding attacks](https:
 
 ### Network (HTTP mode)
 
+- **TLS (HTTPS)** - optional transport encryption via `--tls-cert` and `--tls-key`. Uses Node.js `https` module with PEM-encoded certificate and key files.
 - **Bearer token authentication** - required by default (RFC 6750). A random 256-bit token is generated at startup unless you provide `--auth-token` or disable auth with `--no-auth`.
 - **Host header validation** - prevents [DNS rebinding attacks](https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-w48q-cv73-mx4w). Localhost binds accept only `127.0.0.1`, `localhost`, and `::1`; remote binds accept only the specified `--host`.
 - **Origin validation** - when `--cors-origin` is set to a specific origin, requests with a mismatched `Origin` header are actively rejected with 403 (not just filtered by CORS response headers).
