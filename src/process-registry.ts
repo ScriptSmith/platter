@@ -35,6 +35,7 @@ export class ProcessRegistry {
   private processes = new Map<number, TrackedProcess>();
   private maxConcurrent: number;
   private cleanupInterval: NodeJS.Timeout;
+  private _runningCount = 0;
 
   constructor(opts?: { maxConcurrent?: number }) {
     this.maxConcurrent = opts?.maxConcurrent ?? 20;
@@ -43,11 +44,7 @@ export class ProcessRegistry {
   }
 
   get runningCount(): number {
-    let count = 0;
-    for (const p of this.processes.values()) {
-      if (p.state === "running") count++;
-    }
-    return count;
+    return this._runningCount;
   }
 
   register(child: ChildProcess, command: string): number {
@@ -59,7 +56,12 @@ export class ProcessRegistry {
       this.processes.delete(pid);
     }
 
-    if (this.runningCount >= this.maxConcurrent) {
+    // Increment synchronously before any async work to prevent race
+    this._runningCount++;
+
+    if (this._runningCount > this.maxConcurrent) {
+      this._runningCount--;
+      child.kill();
       throw new Error(
         `Process limit reached (${this.maxConcurrent} concurrent processes). Kill a running process first.`,
       );
@@ -105,6 +107,7 @@ export class ProcessRegistry {
     child.on("close", (code, signal) => {
       if (tracked.state === "running") {
         tracked.state = "completed";
+        this._runningCount--;
       }
       tracked.completedAt = Date.now();
       tracked.exitCode = code;
@@ -115,6 +118,7 @@ export class ProcessRegistry {
     child.on("error", () => {
       if (tracked.state === "running") {
         tracked.state = "completed";
+        this._runningCount--;
       }
       tracked.completedAt = Date.now();
       resolveCompletion();
@@ -179,6 +183,7 @@ export class ProcessRegistry {
     if (tracked.state !== "running") return;
 
     tracked.state = "killed";
+    this._runningCount--;
     killProcessTree(pid);
 
     const fallback = setTimeout(() => {

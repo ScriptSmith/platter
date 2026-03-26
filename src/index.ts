@@ -196,6 +196,7 @@ async function runStdio() {
   logRestrictions();
 
   const cleanup = () => {
+    setTimeout(() => process.exit(1), 10_000).unref();
     registry.killAll().finally(() => {
       registry.dispose();
       process.exit(0);
@@ -292,14 +293,20 @@ async function runHttp() {
 
   const sessions = new Map<string, SessionEntry>();
 
+  const destroySession = (id: string) => {
+    const session = sessions.get(id);
+    if (!session) return;
+    session.registry.killAll().then(() => session.registry.dispose());
+    session.transport.close?.();
+    sessions.delete(id);
+  };
+
   const SESSION_TTL_MS = 30 * 60 * 1000;
   setInterval(() => {
     const now = Date.now();
     for (const [id, session] of sessions) {
       if (now - session.lastAccessed > SESSION_TTL_MS) {
-        session.registry.killAll().then(() => session.registry.dispose());
-        session.transport.close?.();
-        sessions.delete(id);
+        destroySession(id);
       }
     }
   }, 60_000).unref();
@@ -331,11 +338,7 @@ async function runHttp() {
 
     transport.onclose = () => {
       if (transport.sessionId) {
-        const session = sessions.get(transport.sessionId);
-        if (session) {
-          session.registry.killAll().then(() => session.registry.dispose());
-        }
-        sessions.delete(transport.sessionId);
+        destroySession(transport.sessionId);
       }
     };
 
@@ -365,9 +368,7 @@ async function runHttp() {
     const session = sessions.get(sessionId)!;
     session.lastAccessed = Date.now();
     await session.transport.handleRequest(req, res);
-    await session.registry.killAll();
-    session.registry.dispose();
-    sessions.delete(sessionId);
+    destroySession(sessionId);
   });
 
   const useTls = values["tls-cert"] && values["tls-key"];
@@ -389,10 +390,15 @@ async function runHttp() {
 
   // Process-level cleanup for HTTP mode
   const cleanupAllSessions = () => {
-    const promises: Promise<void>[] = [];
-    for (const session of sessions.values()) {
-      promises.push(session.registry.killAll().then(() => session.registry.dispose()));
-    }
+    setTimeout(() => process.exit(1), 10_000).unref();
+    const ids = [...sessions.keys()];
+    const promises = ids.map((id) => {
+      const session = sessions.get(id)!;
+      return session.registry.killAll().then(() => {
+        session.registry.dispose();
+        sessions.delete(id);
+      });
+    });
     Promise.all(promises).finally(() => process.exit(0));
   };
   process.on("SIGTERM", cleanupAllSessions);

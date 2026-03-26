@@ -70,6 +70,9 @@ Options:
       --tls-cert <path>          TLS certificate file (PEM) — enables HTTPS
       --tls-key <path>           TLS private key file (PEM)
 
+Process management:
+      --max-processes <number>   Max concurrent bash processes per session (default: 20)
+
 Restrictions:
       --tools <list>             Comma-separated tools to enable (default: all)
                                  Valid: read, write, edit, bash, glob, grep

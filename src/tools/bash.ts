@@ -119,10 +119,10 @@ function formatWaitResult(result: WaitResult): string {
   const outputText = formatCompletedOutput(result);
 
   if (result.exitSignal) {
-    throw new Error(`${outputText}\n\nProcess was killed by ${result.exitSignal}`);
+    throw new Error(`Process was killed by ${result.exitSignal}\n\n${outputText}`);
   }
   if (result.exitCode !== 0 && result.exitCode !== null) {
-    throw new Error(`${outputText}\n\nCommand exited with code ${result.exitCode}`);
+    throw new Error(`Command exited with code ${result.exitCode}\n\n${outputText}`);
   }
 
   return outputText;
@@ -186,11 +186,9 @@ function legacySpawn(args: { command: string; timeout?: number }, cwd: string): 
       }
 
       if (signal) {
-        outputText += `\n\nProcess was killed by ${signal}`;
-        reject(new Error(outputText));
+        reject(new Error(`Process was killed by ${signal}\n\n${outputText}`));
       } else if (code !== 0 && code !== null) {
-        outputText += `\n\nCommand exited with code ${code}`;
-        reject(new Error(outputText));
+        reject(new Error(`Command exited with code ${code}\n\n${outputText}`));
       } else {
         resolve(outputText);
       }

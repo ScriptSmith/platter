@@ -88,7 +88,7 @@ describe("ProcessRegistry", () => {
     expect(registry.runningCount).toBe(0);
   });
 
-  it("enforces concurrency limit", () => {
+  it("enforces concurrency limit and kills rejected child", async () => {
     const small = new ProcessRegistry({ maxConcurrent: 2 });
     try {
       const c1 = spawnInDir("sleep 60", dir);
@@ -98,9 +98,18 @@ describe("ProcessRegistry", () => {
 
       const c3 = spawnInDir("sleep 60", dir);
       expect(() => small.register(c3, "sleep 60")).toThrow("Process limit reached");
-      c3.kill();
+
+      // The registry should have killed the rejected child
+      const exitCode = await new Promise<number | null>((resolve) => {
+        c3.on("close", (code) => resolve(code));
+        // If already dead, the event won't fire — check after a tick
+        if (c3.exitCode !== null || c3.killed) resolve(c3.exitCode);
+      });
+      expect(c3.killed || exitCode !== null).toBe(true);
+      expect(small.runningCount).toBe(2);
     } finally {
-      small.killAll().then(() => small.dispose());
+      await small.killAll();
+      small.dispose();
     }
   });
 
