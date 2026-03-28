@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 
-export const ALL_TOOL_NAMES = ["read", "write", "edit", "bash", "glob", "grep"] as const;
+export const ALL_TOOL_NAMES = ["read", "write", "edit", "bash", "glob", "grep", "js"] as const;
 export type ToolName = (typeof ALL_TOOL_NAMES)[number];
 
 export type SandboxFsMode = "memory" | "overlay" | "readwrite";

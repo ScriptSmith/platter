@@ -16,6 +16,7 @@ import packageJson from "../package.json";
 import type { ProcessRegistry } from "./process-registry.js";
 import { ALL_TOOL_NAMES, type SandboxFsMode, type SecurityConfig, type ToolName } from "./security.js";
 import { createServer } from "./server.js";
+import type { JsRuntime } from "./tools/js.js";
 
 const USAGE = `platter v${packageJson.version}
 
@@ -201,7 +202,7 @@ function logRestrictions() {
 }
 
 async function runStdio() {
-  const { server, registry } = createServer(cwd, security, serverOpts);
+  const { server, registry, runtime } = createServer(cwd, security, serverOpts);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(`platter MCP server running on stdio (cwd: ${cwd})`);
@@ -209,6 +210,7 @@ async function runStdio() {
 
   const cleanup = () => {
     setTimeout(() => process.exit(1), 10_000).unref();
+    if (runtime) runtime.dispose();
     registry.killAll().finally(() => {
       registry.dispose();
       process.exit(0);
@@ -221,6 +223,7 @@ async function runStdio() {
 interface SessionEntry {
   server: ReturnType<typeof createServer>["server"];
   registry: ProcessRegistry;
+  runtime: JsRuntime | null;
   transport: StreamableHTTPServerTransport;
   lastAccessed: number;
 }
@@ -308,6 +311,7 @@ async function runHttp() {
   const destroySession = (id: string) => {
     const session = sessions.get(id);
     if (!session) return;
+    if (session.runtime) session.runtime.dispose();
     session.registry.killAll().then(() => session.registry.dispose());
     session.transport.close?.();
     sessions.delete(id);
@@ -346,11 +350,11 @@ async function runHttp() {
     }
 
     // New session — create server + transport
-    const { server, registry } = createServer(cwd, security, serverOpts);
+    const { server, registry, runtime } = createServer(cwd, security, serverOpts);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
       onsessioninitialized: (id) => {
-        sessions.set(id, { server, registry, transport, lastAccessed: Date.now() });
+        sessions.set(id, { server, registry, runtime, transport, lastAccessed: Date.now() });
       },
     });
 
@@ -412,6 +416,7 @@ async function runHttp() {
     const ids = [...sessions.keys()];
     const promises = ids.map((id) => {
       const session = sessions.get(id)!;
+      if (session.runtime) session.runtime.dispose();
       return session.registry.killAll().then(() => {
         session.registry.dispose();
         sessions.delete(id);

@@ -8,6 +8,7 @@ import { bashTool } from "./tools/bash.js";
 import { editTool } from "./tools/edit.js";
 import { globTool } from "./tools/glob.js";
 import { grepTool } from "./tools/grep.js";
+import { JsRuntime } from "./tools/js.js";
 import { readTool } from "./tools/read.js";
 import { createSandboxBash } from "./tools/sandbox-bash.js";
 import { writeTool } from "./tools/write.js";
@@ -21,7 +22,7 @@ export function createServer(
   cwd: string,
   security: SecurityConfig = {},
   opts?: CreateServerOpts,
-): { server: McpServer; registry: ProcessRegistry } {
+): { server: McpServer; registry: ProcessRegistry; runtime: JsRuntime | null } {
   const server = new McpServer({
     name: "platter",
     version: packageJson.version,
@@ -293,5 +294,37 @@ Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to termi
     );
   }
 
-  return { server, registry };
+  let runtime: JsRuntime | null = null;
+
+  if (enabled("js")) {
+    runtime = new JsRuntime();
+
+    server.registerTool(
+      "js",
+      {
+        title: "JavaScript",
+        description:
+          'Evaluate JavaScript/TypeScript code in a persistent runtime. State persists across calls within the session.\n\nUse assignment (`x = 42`) or `var` to persist values between calls. `function` and `class` declarations also persist. `let`/`const` are scoped to the current evaluation.\n\nSupports `await` for async operations: `data = await fetch(url)`.\nLoad packages with `await load("lodash")` (fetches from unpkg.com) or `await load("https://cdn.example.com/lib.js")`.\n\nReturns the result of the last expression, plus any console output.',
+        inputSchema: {
+          code: z.string().describe("JavaScript or TypeScript code to evaluate"),
+          timeout: z.number().optional().describe("Timeout in seconds (default: 30)"),
+        },
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+        },
+      },
+      async (args, extra) => {
+        try {
+          const timeoutMs = args.timeout ? args.timeout * 1000 : 30000;
+          const result = await runtime!.evaluate(args.code, timeoutMs, extra.signal);
+          return { content: [{ type: "text", text: result }] };
+        } catch (err: any) {
+          return { content: [{ type: "text", text: err.message }], isError: true };
+        }
+      },
+    );
+  }
+
+  return { server, registry, runtime };
 }
