@@ -18,6 +18,35 @@ export interface SecurityConfig {
   allowedPaths?: string[];
   allowedCommands?: RegExp[];
   sandbox?: SandboxConfig;
+  /**
+   * Notified when allowedTools is mutated at runtime via setToolEnabled.
+   * Used by the tray to broadcast enable/disable to every active session's
+   * RegisteredTool handles and to persist the new state to the config file.
+   */
+  onToolsChanged?: (tool: ToolName, enabled: boolean) => void;
+}
+
+/**
+ * Mutate `allowedTools` and fire the change hook. If `allowedTools` is
+ * unset, it is initialised to the full tool set before applying the change
+ * so that "disable one tool" is distinguishable from "all tools allowed".
+ */
+export function setToolEnabled(config: SecurityConfig, tool: ToolName, enabled: boolean): void {
+  if (!config.allowedTools) {
+    config.allowedTools = new Set(ALL_TOOL_NAMES);
+  }
+  const was = config.allowedTools.has(tool);
+  if (was === enabled) return;
+  if (enabled) {
+    config.allowedTools.add(tool);
+  } else {
+    config.allowedTools.delete(tool);
+  }
+  config.onToolsChanged?.(tool, enabled);
+}
+
+export function isToolEnabled(config: SecurityConfig, tool: ToolName): boolean {
+  return !config.allowedTools || config.allowedTools.has(tool);
 }
 
 /**

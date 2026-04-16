@@ -1,22 +1,16 @@
 #!/usr/bin/env bun
 
 import crypto from "node:crypto";
-import { readFileSync } from "node:fs";
-import https from "node:https";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import {
-  hostHeaderValidation,
-  localhostHostValidation,
-} from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import express from "express";
 import packageJson from "../package.json";
-import type { ProcessRegistry } from "./process-registry.js";
+import { getConfigPath, loadConfig, type PlatterConfig, saveConfig } from "./config.js";
 import { ALL_TOOL_NAMES, type SandboxFsMode, type SecurityConfig, type ToolName } from "./security.js";
 import { createServer } from "./server.js";
-import type { JsRuntime } from "./tools/js.js";
+import { HttpController } from "./tray/http-controller.js";
+import { loadFromKeyring, saveToKeyring } from "./tray/keyring.js";
+import { runTray } from "./tray/tray.js";
 
 const USAGE = `platter v${packageJson.version}
 
@@ -26,6 +20,9 @@ Usage: platter [options]
 
 Options:
   -t, --transport <stdio|http>   Transport mode (default: stdio)
+      --tray                     Run the HTTP server with a Linux system tray
+                                 (implies --transport=http, persists state
+                                 across restarts in ~/.config/platter)
   -p, --port <number>            HTTP port (default: 3100)
       --host <address>           HTTP bind address (default: 127.0.0.1)
       --cwd <path>               Working directory for tools (default: current directory)
@@ -68,9 +65,10 @@ if (rawArgs.includes("--version") || rawArgs.includes("-v")) {
 const { values } = parseArgs({
   options: {
     transport: { type: "string", short: "t", default: "stdio" },
-    port: { type: "string", short: "p", default: "3100" },
-    host: { type: "string", default: "127.0.0.1" },
-    cwd: { type: "string", default: process.cwd() },
+    tray: { type: "boolean", default: false },
+    port: { type: "string", short: "p" },
+    host: { type: "string" },
+    cwd: { type: "string" },
     "cors-origin": { type: "string", default: "*" },
     "auth-token": { type: "string" },
     "no-auth": { type: "boolean", default: false },
@@ -86,6 +84,31 @@ const { values } = parseArgs({
     "max-sessions": { type: "string" },
   },
 });
+
+// Tray mode implies HTTP transport. Also load a persisted config so the
+// auth token, tool state, and listen address survive restarts. CLI flags
+// override the config file.
+const trayMode = values.tray === true;
+const transportExplicit =
+  rawArgs.includes("--transport") || rawArgs.includes("-t") || rawArgs.some((a) => a.startsWith("--transport="));
+let persistedConfig: PlatterConfig | null = null;
+if (trayMode) {
+  if (transportExplicit && values.transport !== "http") {
+    console.error("Error: --tray requires --transport=http (or omit --transport).\n");
+    process.exit(1);
+  }
+  values.transport = "http";
+  const loaded = loadConfig();
+  persistedConfig = loaded.config;
+  if (loaded.created) {
+    console.error(`Wrote default config to ${getConfigPath()}`);
+  }
+}
+
+// Fall-backs for port/host/cwd: CLI flag > config file > hard-coded default.
+if (!values.port) values.port = persistedConfig ? String(persistedConfig.port) : "3100";
+if (!values.host) values.host = persistedConfig?.host ?? "127.0.0.1";
+if (!values.cwd) values.cwd = persistedConfig?.cwd ?? process.cwd();
 
 if (values.transport !== "stdio" && values.transport !== "http") {
   console.error(`Error: invalid transport "${values.transport}". Must be "stdio" or "http".\n`);
@@ -220,220 +243,100 @@ async function runStdio() {
   process.on("SIGINT", cleanup);
 }
 
-interface SessionEntry {
-  server: ReturnType<typeof createServer>["server"];
-  registry: ProcessRegistry;
-  runtime: JsRuntime | null;
-  transport: StreamableHTTPServerTransport;
-  lastAccessed: number;
-}
+async function resolveAuthToken(): Promise<string | null> {
+  if (values["no-auth"]) return null;
+  if (values["auth-token"]) return values["auth-token"]!;
 
-const LOCALHOST_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
-const WILDCARD_HOSTS = new Set(["0.0.0.0", "::"]);
+  // Try the system keyring first, then fall back to the config file.
+  const fromKeyring = await loadFromKeyring();
+  if (fromKeyring) return fromKeyring;
+  if (persistedConfig?.authToken) return persistedConfig.authToken;
+
+  // Generate a fresh token and try to store it in the keyring.
+  const token = crypto.randomBytes(32).toString("base64url");
+  try {
+    await saveToKeyring(token);
+  } catch {
+    // Keyring unavailable — fall back to config file.
+    if (persistedConfig) {
+      persistedConfig.authToken = token;
+      saveConfig(persistedConfig);
+    }
+  }
+  return token;
+}
 
 async function runHttp() {
   const port = parseInt(values.port!, 10);
   const host = values.host!;
   const corsOrigin = values["cors-origin"]!;
+  const token = await resolveAuthToken();
 
-  // Resolve auth token
-  const noAuth = values["no-auth"] as boolean;
-  const token = noAuth ? null : values["auth-token"] || crypto.randomBytes(32).toString("base64url");
-
-  const app = express();
-
-  // Host header validation — DNS rebinding protection
-  // Wildcard binds (0.0.0.0, ::) accept connections on all interfaces, so
-  // the Host header can be anything (localhost, an IP, a hostname, etc.).
-  // Skip host validation for these — auth token still protects the server.
-  if (LOCALHOST_HOSTS.has(host)) {
-    app.use(localhostHostValidation());
-  } else if (WILDCARD_HOSTS.has(host)) {
-    console.error(
-      `Warning: Server is binding to ${host} without DNS rebinding protection. ` +
-        "Use authentication to protect your server.",
-    );
-  } else {
-    app.use(hostHeaderValidation([host]));
+  // In tray mode, sync security.allowedTools from the persisted config
+  // unless an explicit --tools flag was given.
+  if (persistedConfig && !values.tools) {
+    security.allowedTools = new Set(persistedConfig.enabledTools);
   }
 
-  // CORS — allow browser-based agents to connect
-  app.use((req, res, next) => {
-    const origin = corsOrigin === "*" ? req.headers.origin || "*" : corsOrigin;
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Mcp-Session-Id, Authorization");
-    res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
-    if (corsOrigin !== "*") {
-      res.setHeader("Access-Control-Allow-Credentials", "true");
-    }
-    if (req.method === "OPTIONS") {
-      res.status(204).end();
-      return;
-    }
-    next();
+  const http = new HttpController({
+    cwd,
+    security,
+    serverOpts,
+    port,
+    host,
+    corsOrigin,
+    authToken: token,
+    maxSessions,
+    tlsCert: values["tls-cert"],
+    tlsKey: values["tls-key"],
   });
 
-  // Origin validation — actively reject requests with non-matching Origin header
-  if (corsOrigin !== "*") {
-    app.use((req, res, next) => {
-      const origin = req.headers.origin;
-      if (origin && origin !== corsOrigin) {
-        res.status(403).json({ error: "Origin not allowed" });
-        return;
-      }
-      next();
-    });
-  }
+  await http.start();
 
-  // Bearer token authentication (RFC 6750)
+  console.error(`platter MCP server running on ${http.url()} (cwd: ${cwd})`);
   if (token) {
-    app.use((req, res, next) => {
-      const auth = req.headers.authorization;
-      if (!auth) {
-        res.setHeader("WWW-Authenticate", "Bearer");
-        res.status(401).json({ error: "Unauthorized" });
-        return;
-      }
-      if (auth !== `Bearer ${token}`) {
-        res.setHeader("WWW-Authenticate", 'Bearer error="invalid_token"');
-        res.status(401).json({ error: "Unauthorized" });
-        return;
-      }
-      next();
-    });
-  }
-
-  app.use(express.json());
-
-  const sessions = new Map<string, SessionEntry>();
-
-  const destroySession = (id: string) => {
-    const session = sessions.get(id);
-    if (!session) return;
-    sessions.delete(id);
-    if (session.runtime) session.runtime.dispose();
-    session.registry.killAll().then(() => session.registry.dispose());
-    session.transport.close?.();
-  };
-
-  const SESSION_TTL_MS = 30 * 60 * 1000;
-  setInterval(() => {
-    const now = Date.now();
-    for (const [id, session] of sessions) {
-      if (now - session.lastAccessed > SESSION_TTL_MS) {
-        destroySession(id);
-      }
-    }
-  }, 60_000).unref();
-
-  // POST /mcp - main MCP endpoint (handles both initialization and messages)
-  app.post("/mcp", async (req, res) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
-    if (sessionId && sessions.has(sessionId)) {
-      const session = sessions.get(sessionId)!;
-      session.lastAccessed = Date.now();
-      await session.transport.handleRequest(req, res, req.body);
-      return;
-    }
-
-    if (sessionId && !sessions.has(sessionId)) {
-      res.status(404).json({ error: "Session not found" });
-      return;
-    }
-
-    // Enforce session limit
-    if (maxSessions !== undefined && sessions.size >= maxSessions) {
-      res.status(503).json({ error: "Too many sessions" });
-      return;
-    }
-
-    // New session — create server + transport
-    const { server, registry, runtime } = createServer(cwd, security, serverOpts);
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => crypto.randomUUID(),
-      onsessioninitialized: (id) => {
-        sessions.set(id, { server, registry, runtime, transport, lastAccessed: Date.now() });
-      },
-    });
-
-    transport.onclose = () => {
-      if (transport.sessionId) {
-        destroySession(transport.sessionId);
-      }
-    };
-
-    await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
-  });
-
-  // GET /mcp - SSE notifications stream
-  app.get("/mcp", async (req, res) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    if (!sessionId || !sessions.has(sessionId)) {
-      res.status(404).json({ error: "Session not found" });
-      return;
-    }
-    const session = sessions.get(sessionId)!;
-    session.lastAccessed = Date.now();
-    await session.transport.handleRequest(req, res);
-  });
-
-  // DELETE /mcp - close session
-  app.delete("/mcp", async (req, res) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    if (!sessionId || !sessions.has(sessionId)) {
-      res.status(404).json({ error: "Session not found" });
-      return;
-    }
-    const session = sessions.get(sessionId)!;
-    session.lastAccessed = Date.now();
-    await session.transport.handleRequest(req, res);
-    destroySession(sessionId);
-  });
-
-  const useTls = values["tls-cert"] && values["tls-key"];
-  const protocol = useTls ? "https" : "http";
-
-  const onListening = () => {
-    console.error(`platter MCP server running on ${protocol}://${host}:${port}/mcp (cwd: ${cwd})`);
-    if (token) {
-      if (values["auth-token"]) {
-        console.error("Auth: bearer token (provided via --auth-token)");
-      } else {
-        console.error(`Auth token: ${token}`);
-      }
+    if (values["auth-token"]) {
+      console.error("Auth: bearer token (provided via --auth-token)");
+    } else if (persistedConfig?.authToken) {
+      // Token is still in the config file (keyring was unavailable).
+      console.error(`Auth token: ${token} (persisted in ${getConfigPath()})`);
+    } else if (persistedConfig) {
+      console.error(`Auth token: ${token} (stored in system keyring)`);
     } else {
-      console.error("Auth: disabled (--no-auth)");
+      console.error(`Auth token: ${token}`);
     }
-    logRestrictions();
-  };
-
-  // Process-level cleanup for HTTP mode
-  const cleanupAllSessions = () => {
-    setTimeout(() => process.exit(1), 10_000).unref();
-    const ids = [...sessions.keys()];
-    const promises = ids.map((id) => {
-      const session = sessions.get(id)!;
-      if (session.runtime) session.runtime.dispose();
-      return session.registry.killAll().then(() => {
-        session.registry.dispose();
-        sessions.delete(id);
-      });
-    });
-    Promise.all(promises).finally(() => process.exit(0));
-  };
-  process.on("SIGTERM", cleanupAllSessions);
-  process.on("SIGINT", cleanupAllSessions);
-
-  if (useTls) {
-    const cert = readFileSync(values["tls-cert"]!);
-    const key = readFileSync(values["tls-key"]!);
-    https.createServer({ cert, key }, app).listen(port, host, onListening);
   } else {
-    app.listen(port, host, onListening);
+    console.error("Auth: disabled (--no-auth)");
   }
+  logRestrictions();
+
+  let tray: { dispose: () => Promise<void> } | null = null;
+  if (trayMode && persistedConfig) {
+    try {
+      tray = await runTray({
+        http,
+        security,
+        config: persistedConfig,
+        onQuit: async () => {
+          await http.dispose();
+        },
+      });
+      console.error("System tray registered.");
+    } catch (err: any) {
+      console.error(`[tray] failed to register: ${err?.message ?? err}`);
+    }
+  }
+
+  const cleanup = () => {
+    setTimeout(() => process.exit(1), 10_000).unref();
+    (async () => {
+      if (tray) await tray.dispose().catch(() => {});
+      await http.dispose().catch(() => {});
+      process.exit(0);
+    })();
+  };
+  process.on("SIGTERM", cleanup);
+  process.on("SIGINT", cleanup);
 }
 
 if (values.transport === "http") {

@@ -1,9 +1,9 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import packageJson from "../package.json";
 import { ProcessRegistry } from "./process-registry.js";
 import type { SecurityConfig, ToolName } from "./security.js";
-import { validateCommand, validatePath } from "./security.js";
+import { isToolEnabled, validateCommand, validatePath } from "./security.js";
 import { bashTool } from "./tools/bash.js";
 import { editTool } from "./tools/edit.js";
 import { globTool } from "./tools/glob.js";
@@ -18,19 +18,34 @@ export interface CreateServerOpts {
   maxProcesses?: number;
 }
 
-export function createServer(
-  cwd: string,
-  security: SecurityConfig = {},
-  opts?: CreateServerOpts,
-): { server: McpServer; registry: ProcessRegistry; runtime: JsRuntime | null } {
+export interface CreateServerResult {
+  server: McpServer;
+  registry: ProcessRegistry;
+  runtime: JsRuntime | null;
+  /**
+   * Handles for every registered tool. Tools not currently allowed by
+   * `security.allowedTools` are registered in a disabled state so the tray
+   * can flip them at runtime via `.enable()` / `.disable()` (which also
+   * broadcasts `tools/list_changed`).
+   */
+  registeredTools: Map<ToolName, RegisteredTool>;
+}
+
+export function createServer(cwd: string, security: SecurityConfig = {}, opts?: CreateServerOpts): CreateServerResult {
   const server = new McpServer({
     name: "platter",
     version: packageJson.version,
   });
 
   const registry = new ProcessRegistry({ maxConcurrent: opts?.maxProcesses ?? 20 });
+  const registeredTools = new Map<ToolName, RegisteredTool>();
 
-  const enabled = (name: ToolName) => !security.allowedTools || security.allowedTools.has(name);
+  const register = (name: ToolName, handle: RegisteredTool) => {
+    registeredTools.set(name, handle);
+    if (!isToolEnabled(security, name)) {
+      handle.disable();
+    }
+  };
 
   async function checkPath(path: string): Promise<void> {
     if (security.allowedPaths) {
@@ -44,8 +59,8 @@ export function createServer(
     }
   }
 
-  if (enabled("read")) {
-    server.registerTool(
+  {
+    const handle = server.registerTool(
       "read",
       {
         title: "Read",
@@ -71,10 +86,11 @@ export function createServer(
         }
       },
     );
+    register("read", handle);
   }
 
-  if (enabled("write")) {
-    server.registerTool(
+  {
+    const handle = server.registerTool(
       "write",
       {
         title: "Write",
@@ -100,10 +116,11 @@ export function createServer(
         }
       },
     );
+    register("write", handle);
   }
 
-  if (enabled("edit")) {
-    server.registerTool(
+  {
+    const handle = server.registerTool(
       "edit",
       {
         title: "Edit",
@@ -131,9 +148,10 @@ export function createServer(
         }
       },
     );
+    register("edit", handle);
   }
 
-  if (enabled("bash")) {
+  {
     const sandboxEnabled = security.sandbox?.enabled === true;
     const sandboxBashFn = sandboxEnabled ? createSandboxBash(security.sandbox!, security.allowedPaths, cwd) : null;
 
@@ -149,8 +167,9 @@ Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to termi
 
     const destructiveHint = sandboxEnabled ? security.sandbox!.fsMode === "readwrite" : true;
 
+    let handle: RegisteredTool;
     if (sandboxEnabled) {
-      server.registerTool(
+      handle = server.registerTool(
         "bash",
         {
           title: "Bash",
@@ -175,7 +194,7 @@ Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to termi
         },
       );
     } else {
-      server.registerTool(
+      handle = server.registerTool(
         "bash",
         {
           title: "Bash",
@@ -210,10 +229,11 @@ Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to termi
         },
       );
     }
+    register("bash", handle);
   }
 
-  if (enabled("glob")) {
-    server.registerTool(
+  {
+    const handle = server.registerTool(
       "glob",
       {
         title: "Glob",
@@ -241,10 +261,11 @@ Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to termi
         }
       },
     );
+    register("glob", handle);
   }
 
-  if (enabled("grep")) {
-    server.registerTool(
+  {
+    const handle = server.registerTool(
       "grep",
       {
         title: "Grep",
@@ -292,14 +313,12 @@ Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to termi
         }
       },
     );
+    register("grep", handle);
   }
 
-  let runtime: JsRuntime | null = null;
-
-  if (enabled("js")) {
-    runtime = new JsRuntime();
-
-    server.registerTool(
+  const runtime: JsRuntime = new JsRuntime();
+  {
+    const handle = server.registerTool(
       "js",
       {
         title: "JavaScript",
@@ -324,7 +343,8 @@ Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to termi
         }
       },
     );
+    register("js", handle);
   }
 
-  return { server, registry, runtime };
+  return { server, registry, runtime, registeredTools };
 }

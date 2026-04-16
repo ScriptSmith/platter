@@ -1,0 +1,17 @@
+[Unit]
+Description=Platter MCP server (tray)
+Documentation=https://github.com/ScriptSmith/platter
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/platter --tray
+Restart=on-failure
+RestartSec=5
+# Let the tray inherit the user's DBus session so it can publish
+# StatusNotifierItem on the session bus.
+PassEnvironment=DISPLAY WAYLAND_DISPLAY XDG_RUNTIME_DIR XDG_SESSION_TYPE DBUS_SESSION_BUS_ADDRESS
+
+[Install]
+WantedBy=graphical-session.target

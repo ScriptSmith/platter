@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Platter
+GenericName=MCP Server
+Comment=Your computer, served on a platter (MCP server + tray)
+Exec=platter --tray
+Icon=platter
+Terminal=false
+Categories=Development;
+Keywords=mcp;model context protocol;ai;agent;
+StartupNotify=false
