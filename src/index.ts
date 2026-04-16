@@ -311,10 +311,10 @@ async function runHttp() {
   const destroySession = (id: string) => {
     const session = sessions.get(id);
     if (!session) return;
+    sessions.delete(id);
     if (session.runtime) session.runtime.dispose();
     session.registry.killAll().then(() => session.registry.dispose());
     session.transport.close?.();
-    sessions.delete(id);
   };
 
   const SESSION_TTL_MS = 30 * 60 * 1000;

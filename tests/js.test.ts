@@ -4,8 +4,8 @@ import { JsRuntime } from "../src/tools/js.js";
 describe("JsRuntime", () => {
   let runtime: JsRuntime;
 
-  afterEach(async () => {
-    await runtime.dispose();
+  afterEach(() => {
+    runtime.dispose();
   });
 
   it("evaluates simple expressions", async () => {
@@ -81,16 +81,24 @@ describe("JsRuntime", () => {
     expect(result).toContain("3");
   });
 
+  it("transpiles TypeScript via Bun.Transpiler on SyntaxError", async () => {
+    runtime = new JsRuntime();
+    await runtime.evaluate("var x: number = 42");
+    const result = await runtime.evaluate("x + 1");
+    expect(result).toBe("43");
+  });
+
   it("times out on infinite loops", async () => {
     runtime = new JsRuntime();
     await expect(runtime.evaluate("while(true){}", 1000)).rejects.toThrow("timed out");
   });
 
-  it("recovers after timeout by respawning", async () => {
+  it("context survives after timeout", async () => {
     runtime = new JsRuntime();
+    await runtime.evaluate("var before = 123");
     await expect(runtime.evaluate("while(true){}", 1000)).rejects.toThrow("timed out");
-    // Should work after respawn (state is lost)
-    const result = await runtime.evaluate("1 + 1");
-    expect(result).toBe("2");
+    // Context persists — vm timeout doesn't destroy state
+    const result = await runtime.evaluate("before");
+    expect(result).toBe("123");
   });
 });
