@@ -1,8 +1,12 @@
+<p align="center">
+  <img src="linux/platter.svg" width="128" height="128" alt="platter icon">
+</p>
+
 # platter
 
 *Your computer, served on a platter.*
 
-MCP server that exposes **Read**, **Write**, **Edit**, **Bash**, **Glob**, and **Grep** tools over Stdio and StreamableHTTP transports. Built with [Bun](https://bun.sh), compiles to standalone executables.
+MCP server that exposes **Read**, **Write**, **Edit**, **Bash**, **Glob**, **Grep**, and **JS** tools over Stdio and StreamableHTTP transports. Built with [Bun](https://bun.sh), compiles to standalone executables.
 
 Designed to be used by browser-based (or any MCP-compatible) agents, like [Hadrian](https://github.com/ScriptSmith/hadrian), to control a computer.
 
@@ -16,6 +20,7 @@ Designed to be used by browser-based (or any MCP-compatible) agents, like [Hadri
 | **bash** | Execute shell commands with optional timeout. Output truncated to last 2000 lines or 50KB. |
 | **glob** | Fast file pattern matching. Returns up to 500 paths matching a glob pattern (e.g. `**/*.ts`). |
 | **grep** | Search file contents using [ripgrep](https://github.com/BurntSushi/ripgrep). Supports regex, file filtering, context lines, and multiple output modes. Requires `rg` to be installed. |
+| **js** | Evaluate JavaScript/TypeScript in a persistent sandboxed runtime (Node.js `vm`). State persists across calls within a session. Supports `await`, `console.log`, and loading packages from unpkg.com via `await load("package")`. Auto-returns the last expression. |
 
 ## Quick start
 
@@ -61,6 +66,9 @@ Usage: platter [options]
 
 Options:
   -t, --transport <stdio|http>   Transport mode (default: stdio)
+      --tray                     Run the HTTP server with a Linux system tray
+                                 (implies --transport=http, persists state
+                                 across restarts in ~/.config/platter)
   -p, --port <number>            HTTP port (default: 3100)
       --host <address>           HTTP bind address (default: 127.0.0.1)
       --cwd <path>               Working directory for tools (default: current directory)
@@ -76,7 +84,7 @@ Process management:
 
 Restrictions:
       --tools <list>             Comma-separated tools to enable (default: all)
-                                 Valid: read, write, edit, bash, glob, grep
+                                 Valid: read, write, edit, bash, glob, grep, js
       --allow-path <path>        Restrict file tools to this path (repeatable)
       --allow-command <regex>    Allow bash commands matching this pattern (repeatable)
                                  Pattern must match the entire command string
@@ -99,8 +107,8 @@ You can limit which tools are registered, which filesystem paths file tools can 
 Only register specific tools. Unregistered tools are completely hidden from MCP clients:
 
 ```bash
-platter --tools read,glob,grep  # read-only server
-platter --tools read,write,edit # no bash/search
+platter --tools read,glob,grep    # read-only server
+platter --tools read,write,edit   # no bash/search/js
 ```
 
 #### Path restrictions
@@ -203,6 +211,37 @@ platter -t http --cors-origin https://myapp.example.com
 Sessions are managed via the `Mcp-Session-Id` header per the StreamableHTTP spec.
 
 The server validates the `Host` header to prevent [DNS rebinding attacks](https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-w48q-cv73-mx4w). When `--cors-origin` is set, the `Origin` header is also validated server-side (not just via CORS response headers).
+
+### Tray mode (Linux)
+
+Run platter as a persistent background service with a system tray icon:
+
+```bash
+platter --tray
+```
+
+This implies `--transport=http` and adds:
+
+- **System tray icon** via DBus (StatusNotifierItem protocol), compatible with KDE, GNOME (with AppIndicator extension), and other desktop environments.
+- **Persistent configuration** in `~/.config/platter/config.json` — auth token, enabled tools, port, host, and working directory survive restarts.
+- **Dynamic tool toggling** — enable or disable individual tools at runtime from the tray menu. Changes are persisted and take effect immediately.
+- **Auth token management** — copy the server URL or auth token to clipboard, or regenerate the token. Tokens are stored in the system keyring when available, falling back to the config file.
+- **Server controls** — start, stop, and restart the HTTP server from the tray menu.
+
+#### Linux installer
+
+The `linux/install.sh` script performs a user-level install (no `sudo` required):
+
+```bash
+./linux/install.sh                  # install
+./linux/install.sh --uninstall      # remove
+```
+
+This installs:
+- `~/.local/bin/platter` — the binary
+- `~/.local/share/applications/platter.desktop` — desktop launcher entry
+- `~/.local/share/icons/hicolor/scalable/apps/platter.svg` — application icon
+- `~/.config/systemd/user/platter.service` — systemd user unit for autostart
 
 ## Security
 
