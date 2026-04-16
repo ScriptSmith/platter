@@ -6,6 +6,8 @@ import { parseArgs } from "node:util";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import packageJson from "../package.json";
 import { getConfigPath, loadConfig, type PlatterConfig, saveConfig } from "./config.js";
+import { PlatterClientsStore } from "./oauth/clients-store.js";
+import { PlatterOAuthProvider } from "./oauth/provider.js";
 import { ALL_TOOL_NAMES, type SandboxFsMode, type SecurityConfig, type ToolName } from "./security.js";
 import { createServer } from "./server.js";
 import { HttpController } from "./tray/http-controller.js";
@@ -27,8 +29,8 @@ Options:
       --host <address>           HTTP bind address (default: 127.0.0.1)
       --cwd <path>               Working directory for tools (default: current directory)
       --cors-origin <origin>     Allowed CORS origin (default: *)
+      --auth <mode>              Auth mode: oauth, bearer, none (default: oauth)
       --auth-token <token>       Bearer token for HTTP auth (auto-generated if omitted)
-      --no-auth                  Disable bearer token authentication
       --tls-cert <path>          TLS certificate file (PEM) — enables HTTPS
       --tls-key <path>           TLS private key file (PEM)
 
@@ -70,8 +72,8 @@ const { values } = parseArgs({
     host: { type: "string" },
     cwd: { type: "string" },
     "cors-origin": { type: "string", default: "*" },
+    auth: { type: "string", default: "oauth" },
     "auth-token": { type: "string" },
-    "no-auth": { type: "boolean", default: false },
     tools: { type: "string" },
     "allow-path": { type: "string", multiple: true },
     "allow-command": { type: "string", multiple: true },
@@ -116,8 +118,16 @@ if (values.transport !== "stdio" && values.transport !== "http") {
   process.exit(1);
 }
 
-if (values["auth-token"] && values["no-auth"]) {
-  console.error("Error: --auth-token and --no-auth are mutually exclusive.\n");
+const VALID_AUTH_MODES = ["oauth", "bearer", "none"];
+const authMode = values.auth!;
+if (!VALID_AUTH_MODES.includes(authMode)) {
+  console.error(`Error: invalid --auth mode "${authMode}". Must be one of: ${VALID_AUTH_MODES.join(", ")}\n`);
+  console.error(USAGE);
+  process.exit(1);
+}
+
+if (values["auth-token"] && authMode === "none") {
+  console.error("Error: --auth-token and --auth none are mutually exclusive.\n");
   console.error(USAGE);
   process.exit(1);
 }
@@ -244,7 +254,7 @@ async function runStdio() {
 }
 
 async function resolveAuthToken(): Promise<string | null> {
-  if (values["no-auth"]) return null;
+  if (authMode === "none") return null;
   if (values["auth-token"]) return values["auth-token"]!;
 
   // Try the system keyring first, then fall back to the config file.
@@ -278,6 +288,13 @@ async function runHttp() {
     security.allowedTools = new Set(persistedConfig.enabledTools);
   }
 
+  // OAuth 2.1 Authorization Code + PKCE — enabled in "oauth" auth mode.
+  let oauthProvider: PlatterOAuthProvider | undefined;
+  if (authMode === "oauth") {
+    const store = new PlatterClientsStore();
+    oauthProvider = new PlatterOAuthProvider(store);
+  }
+
   const http = new HttpController({
     cwd,
     security,
@@ -286,6 +303,7 @@ async function runHttp() {
     host,
     corsOrigin,
     authToken: token,
+    oauthProvider,
     maxSessions,
     tlsCert: values["tls-cert"],
     tlsKey: values["tls-key"],
@@ -294,19 +312,20 @@ async function runHttp() {
   await http.start();
 
   console.error(`platter MCP server running on ${http.url()} (cwd: ${cwd})`);
+  console.error(`Auth mode: ${authMode}`);
+  if (oauthProvider) {
+    console.error("OAuth 2.1 + PKCE enabled (dynamic client registration at /register)");
+  }
   if (token) {
     if (values["auth-token"]) {
-      console.error("Auth: bearer token (provided via --auth-token)");
+      console.error("Bearer token: provided via --auth-token");
     } else if (persistedConfig?.authToken) {
-      // Token is still in the config file (keyring was unavailable).
-      console.error(`Auth token: ${token} (persisted in ${getConfigPath()})`);
+      console.error(`Bearer token: ${token} (persisted in ${getConfigPath()})`);
     } else if (persistedConfig) {
-      console.error(`Auth token: ${token} (stored in system keyring)`);
+      console.error(`Bearer token: ${token} (stored in system keyring)`);
     } else {
-      console.error(`Auth token: ${token}`);
+      console.error(`Bearer token: ${token}`);
     }
-  } else {
-    console.error("Auth: disabled (--no-auth)");
   }
   logRestrictions();
 
@@ -317,7 +336,9 @@ async function runHttp() {
         http,
         security,
         config: persistedConfig,
+        oauthProvider,
         onQuit: async () => {
+          oauthProvider?.dispose();
           await http.dispose();
         },
       });
@@ -331,6 +352,7 @@ async function runHttp() {
     setTimeout(() => process.exit(1), 10_000).unref();
     (async () => {
       if (tray) await tray.dispose().catch(() => {});
+      oauthProvider?.dispose();
       await http.dispose().catch(() => {});
       process.exit(0);
     })();

@@ -1,18 +1,23 @@
 import crypto from "node:crypto";
 import { readFileSync } from "node:fs";
-import type { Server as HttpsServer } from "node:http";
-import type { Server } from "node:http";
+import type { Server as HttpsServer, Server } from "node:http";
 import https from "node:https";
+import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
+import { getOAuthProtectedResourceMetadataUrl, mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
+import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   hostHeaderValidation,
   localhostHostValidation,
 } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
-import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import type { RequestHandler } from "express";
 import express from "express";
+import { installConsentRoutes } from "../oauth/consent.js";
+import { DualVerifier } from "../oauth/dual-verifier.js";
+import type { PlatterOAuthProvider } from "../oauth/provider.js";
 import type { ProcessRegistry } from "../process-registry.js";
 import type { SecurityConfig, ToolName } from "../security.js";
-import { createServer, type CreateServerOpts } from "../server.js";
+import { type CreateServerOpts, createServer } from "../server.js";
 import type { JsRuntime } from "../tools/js.js";
 
 interface SessionEntry {
@@ -33,6 +38,8 @@ export interface HttpControllerOptions {
   corsOrigin: string;
   /** Initial auth token. `null` disables auth entirely. */
   authToken: string | null;
+  /** When set, enables OAuth 2.1 Authorization Code + PKCE alongside legacy bearer auth. */
+  oauthProvider?: PlatterOAuthProvider;
   maxSessions?: number;
   tlsCert?: string;
   tlsKey?: string;
@@ -167,31 +174,66 @@ export class HttpController {
       });
     }
 
-    // Bearer token check reads `this.authToken` on every request so the tray
-    // can rotate it without rebuilding middleware.
-    app.use((req, res, next) => {
-      const token = this.authToken;
-      if (!token) {
-        next();
-        return;
-      }
-      const auth = req.headers.authorization;
-      if (!auth) {
-        res.setHeader("WWW-Authenticate", "Bearer");
-        res.status(401).json({ error: "Unauthorized" });
-        return;
-      }
-      if (auth !== `Bearer ${token}`) {
-        res.setHeader("WWW-Authenticate", 'Bearer error="invalid_token"');
-        res.status(401).json({ error: "Unauthorized" });
-        return;
-      }
-      next();
-    });
-
     app.use(express.json());
+    app.use(express.urlencoded({ extended: false }));
 
-    app.post("/mcp", async (req, res) => {
+    // ── Auth strategy ───────────────────────────────────────────────
+    let mcpAuth: RequestHandler;
+
+    const provider = this.opts.oauthProvider;
+    if (provider) {
+      // OAuth 2.1 mode: install standard OAuth endpoints + consent page,
+      // then protect /mcp with requireBearerAuth (falls back to legacy
+      // bearer via the DualVerifier).
+      const proto = this.opts.tlsCert && this.opts.tlsKey ? "https" : "http";
+      const issuerUrl = new URL(`${proto}://${this.opts.host}:${this.opts.port}`);
+      const mcpServerUrl = new URL(`${proto}://${this.opts.host}:${this.opts.port}/mcp`);
+
+      app.use(
+        mcpAuthRouter({
+          provider,
+          issuerUrl,
+          scopesSupported: [],
+          resourceServerUrl: mcpServerUrl,
+          resourceName: "Platter MCP Server",
+        }),
+      );
+
+      installConsentRoutes(app, provider);
+
+      const verifier = new DualVerifier(provider, () => this.authToken);
+      mcpAuth = requireBearerAuth({
+        verifier,
+        requiredScopes: [],
+        resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(mcpServerUrl),
+      });
+    } else {
+      // Legacy mode: static bearer token checked on every request so the
+      // tray can rotate it without rebuilding middleware.
+      mcpAuth = (req, res, next) => {
+        const token = this.authToken;
+        if (!token) {
+          next();
+          return;
+        }
+        const auth = req.headers.authorization;
+        if (!auth) {
+          res.setHeader("WWW-Authenticate", "Bearer");
+          res.status(401).json({ error: "Unauthorized" });
+          return;
+        }
+        if (auth !== `Bearer ${token}`) {
+          res.setHeader("WWW-Authenticate", 'Bearer error="invalid_token"');
+          res.status(401).json({ error: "Unauthorized" });
+          return;
+        }
+        next();
+      };
+    }
+
+    // ── MCP endpoints ───────────────────────────────────────────────
+
+    app.post("/mcp", mcpAuth, async (req, res) => {
       const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
       if (sessionId && this.sessions.has(sessionId)) {
@@ -236,7 +278,7 @@ export class HttpController {
       await transport.handleRequest(req, res, req.body);
     });
 
-    app.get("/mcp", async (req, res) => {
+    app.get("/mcp", mcpAuth, async (req, res) => {
       const sessionId = req.headers["mcp-session-id"] as string | undefined;
       if (!sessionId || !this.sessions.has(sessionId)) {
         res.status(404).json({ error: "Session not found" });
@@ -247,7 +289,7 @@ export class HttpController {
       await session.transport.handleRequest(req, res);
     });
 
-    app.delete("/mcp", async (req, res) => {
+    app.delete("/mcp", mcpAuth, async (req, res) => {
       const sessionId = req.headers["mcp-session-id"] as string | undefined;
       if (!sessionId || !this.sessions.has(sessionId)) {
         res.status(404).json({ error: "Session not found" });

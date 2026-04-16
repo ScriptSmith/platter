@@ -1,0 +1,36 @@
+import type { OAuthTokenVerifier } from "@modelcontextprotocol/sdk/server/auth/provider.js";
+import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
+import type { PlatterOAuthProvider } from "./provider.js";
+
+/**
+ * Attempts OAuth token verification first, then falls back to checking
+ * against the legacy static bearer token. This lets `requireBearerAuth`
+ * handle both auth strategies in a single middleware.
+ */
+export class DualVerifier implements OAuthTokenVerifier {
+  constructor(
+    private provider: PlatterOAuthProvider,
+    private getLegacyToken: () => string | null,
+  ) {}
+
+  async verifyAccessToken(token: string): Promise<AuthInfo> {
+    // Try OAuth first.
+    try {
+      return await this.provider.verifyAccessToken(token);
+    } catch {
+      // Fall through to legacy check.
+    }
+
+    // Legacy static bearer token.
+    const legacy = this.getLegacyToken();
+    if (legacy && token === legacy) {
+      return {
+        token,
+        clientId: "legacy-bearer",
+        scopes: ["*"],
+      };
+    }
+
+    throw new Error("Invalid access token");
+  }
+}

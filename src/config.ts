@@ -32,6 +32,10 @@ export function getLogPath(): string {
   return join(getStateDir(), "platter.log");
 }
 
+export function getClientsPath(): string {
+  return join(getConfigDir(), "clients.json");
+}
+
 function defaultConfig(): PlatterConfig {
   return {
     version: 1,

@@ -3,9 +3,9 @@ import dbus from "dbus-next";
 import packageJson from "../../package.json";
 import { getConfigDir, getConfigPath, getLogPath, type PlatterConfig, saveConfig } from "../config.js";
 import { ALL_TOOL_NAMES, type SecurityConfig, setToolEnabled, type ToolName } from "../security.js";
+import { copyToClipboard } from "./clipboard.js";
 import { DBusMenu, type MenuItem } from "./dbus-menu.js";
 import type { HttpController } from "./http-controller.js";
-import { copyToClipboard } from "./clipboard.js";
 import { saveToKeyring } from "./keyring.js";
 import { StatusNotifierItem } from "./sni.js";
 
@@ -50,6 +50,7 @@ export interface RunTrayOptions {
   http: HttpController;
   security: SecurityConfig;
   config: PlatterConfig;
+  oauthProvider?: import("../oauth/provider.js").PlatterOAuthProvider;
   onQuit: () => Promise<void> | void;
 }
 
@@ -121,6 +122,17 @@ export async function runTray(opts: RunTrayOptions): Promise<{ dispose: () => Pr
 
   refreshStatus();
   refreshLifecycleButtons(menu, http, dbusMenu);
+
+  // When an OAuth authorization request arrives, notify the user via the
+  // desktop notification system. The browser-based client that initiated
+  // the flow is already being redirected to the consent page, so we do NOT
+  // auto-open a second window here — that would cause a duplicate tab.
+  const oauthProvider = opts.oauthProvider;
+  if (oauthProvider) {
+    oauthProvider.on("pending", ({ clientName }: { clientName: string }) => {
+      notify("Authorization request", `${clientName} wants to connect to Platter`);
+    });
+  }
 
   return {
     dispose: async () => {

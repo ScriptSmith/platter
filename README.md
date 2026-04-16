@@ -73,8 +73,8 @@ Options:
       --host <address>           HTTP bind address (default: 127.0.0.1)
       --cwd <path>               Working directory for tools (default: current directory)
       --cors-origin <origin>     Allowed CORS origin (default: *)
+      --auth <mode>              Auth mode: oauth, bearer, none (default: oauth)
       --auth-token <token>       Bearer token for HTTP auth (auto-generated if omitted)
-      --no-auth                  Disable bearer token authentication
       --tls-cert <path>          TLS certificate file (PEM) — enables HTTPS
       --tls-key <path>           TLS private key file (PEM)
 
@@ -146,16 +146,43 @@ Active restrictions are logged to stderr at startup.
 
 ### Authentication
 
-In HTTP mode, platter requires a bearer token on every request (`Authorization: Bearer <token>` header). By default a random token is generated at startup and printed to stderr. You can also provide your own:
+Controlled by `--auth <mode>`:
+
+| Mode | Description |
+|------|-------------|
+| `oauth` (default) | OAuth 2.1 Authorization Code + PKCE, with a static bearer token as fallback |
+| `bearer` | Static bearer token only |
+| `none` | No authentication |
+
+#### OAuth 2.1 (`--auth oauth`)
+
+MCP clients that support [RFC 9728](https://datatracker.ietf.org/doc/html/rfc9728) (Protected Resource Metadata) can discover platter's OAuth endpoints automatically and authenticate without manual token copying.
+
+The flow:
+
+1. Client discovers `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource/mcp`
+2. Client registers via `POST /register` ([RFC 7591](https://datatracker.ietf.org/doc/html/rfc7591) dynamic client registration)
+3. Client initiates Authorization Code + PKCE flow via `/authorize`
+4. User sees a consent page and approves/denies the request
+5. Client exchanges the authorization code for tokens at `/token`
+6. Subsequent requests use `Authorization: Bearer <access_token>`
+
+Access tokens expire after 1 hour and can be refreshed. Client registrations are persisted to `~/.config/platter/clients.json`. A static bearer token is also accepted as a fallback for clients that don't support OAuth.
+
+#### Bearer token (`--auth bearer`)
+
+A random bearer token is generated at startup and printed to stderr (or stored in the system keyring in tray mode). Every request must include `Authorization: Bearer <token>`. You can provide your own:
 
 ```bash
-platter -t http --auth-token my-secret-token
+platter -t http --auth bearer --auth-token my-secret-token
 ```
 
-To disable authentication entirely (e.g. behind a reverse proxy that handles auth):
+#### No authentication (`--auth none`)
+
+Disable authentication entirely (e.g. behind a reverse proxy that handles auth):
 
 ```bash
-platter -t http --no-auth
+platter -t http --auth none
 ```
 
 ### TLS (HTTPS)
@@ -248,7 +275,8 @@ This installs:
 ### Network (HTTP mode)
 
 - **TLS (HTTPS)** - optional transport encryption via `--tls-cert` and `--tls-key`. Uses Node.js `https` module with PEM-encoded certificate and key files.
-- **Bearer token authentication** - required by default (RFC 6750). A random 256-bit token is generated at startup unless you provide `--auth-token` or disable auth with `--no-auth`.
+- **OAuth 2.1 + PKCE** (`--auth oauth`, default) - MCP clients authenticate via Authorization Code flow with PKCE ([RFC 7636](https://datatracker.ietf.org/doc/html/rfc7636)). Supports dynamic client registration ([RFC 7591](https://datatracker.ietf.org/doc/html/rfc7591)) and token revocation ([RFC 7009](https://datatracker.ietf.org/doc/html/rfc7009)).
+- **Bearer token authentication** - a static bearer token (RFC 6750) is available as a fallback in `oauth` mode and as the sole method in `bearer` mode. A random 256-bit token is generated at startup unless you provide `--auth-token` or set `--auth none`.
 - **Host header validation** - prevents [DNS rebinding attacks](https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-w48q-cv73-mx4w). Localhost binds accept only `127.0.0.1`, `localhost`, and `::1`; remote binds accept only the specified `--host`.
 - **Origin validation** - when `--cors-origin` is set to a specific origin, requests with a mismatched `Origin` header are actively rejected with 403 (not just filtered by CORS response headers).
 
