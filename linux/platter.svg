@@ -1,14 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"
      fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
-  <!-- Cloche dome: half-ellipse sitting on the plate -->
-  <path d="M 16 98 C 16 42, 40 22, 64 22 C 88 22, 112 42, 112 98"
-        stroke-width="9" fill="currentColor" fill-opacity="0.15"/>
+  <!-- Circular background -->
+  <circle cx="64" cy="64" r="62" fill="#e8e8e8" stroke="none"/>
 
-  <!-- Handle knob on top of the dome -->
-  <circle cx="64" cy="14" r="9" fill="currentColor"/>
+  <!-- Scale icon to fit inside circle with padding -->
+  <g transform="translate(64,64) scale(0.85) translate(-64,-64)">
+    <!-- Cloche dome: half-ellipse sitting on the plate -->
+    <path d="M 16 98 C 16 42, 40 22, 64 22 C 88 22, 112 42, 112 98"
+          stroke-width="9" fill="currentColor" fill-opacity="0.15"/>
 
-  <!-- Plate: thick horizontal bar under the dome -->
-  <line x1="12" y1="102" x2="116" y2="102" stroke-width="9"/>
-  <line x1="22" y1="112" x2="106" y2="112" stroke-width="6" opacity="0.55"/>
+    <!-- Handle knob on top of the dome -->
+    <circle cx="64" cy="14" r="9" fill="currentColor"/>
+
+    <!-- Plate: thick horizontal bar under the dome -->
+    <line x1="12" y1="102" x2="116" y2="102" stroke-width="9"/>
+    <line x1="22" y1="112" x2="106" y2="112" stroke-width="6" opacity="0.55"/>
+  </g>
 </svg>
