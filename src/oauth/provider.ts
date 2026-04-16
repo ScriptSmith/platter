@@ -21,6 +21,7 @@ const SWEEP_INTERVAL_MS = 60_000;
 interface CodeEntry {
   clientId: string;
   params: AuthorizationParams;
+  grantedScopes: string[];
   createdAt: number;
 }
 
@@ -101,7 +102,7 @@ export class PlatterOAuthProvider extends EventEmitter implements OAuthServerPro
 
     const accessToken = crypto.randomBytes(32).toString("base64url");
     const refreshToken = crypto.randomBytes(32).toString("base64url");
-    const scopes = entry.params.scopes ?? [];
+    const scopes = entry.grantedScopes;
 
     this.tokens.set(accessToken, {
       clientId: client.client_id,
@@ -213,10 +214,10 @@ export class PlatterOAuthProvider extends EventEmitter implements OAuthServerPro
   }
 
   /**
-   * Approve a pending authorization. Returns the redirect URL the consent
-   * handler should send the user to.
+   * Approve a pending authorization. `grantedScopes` are the scopes the user
+   * selected on the consent page (tool checkboxes). Returns the redirect URL.
    */
-  approveAuthorization(requestId: string): string {
+  approveAuthorization(requestId: string, grantedScopes: string[]): string {
     const entry = this.pending.get(requestId);
     if (!entry) throw new Error("Authorization request not found or expired");
     this.pending.delete(requestId);
@@ -225,6 +226,7 @@ export class PlatterOAuthProvider extends EventEmitter implements OAuthServerPro
     this.codes.set(code, {
       clientId: entry.client.client_id,
       params: entry.params,
+      grantedScopes,
       createdAt: Date.now(),
     });
 

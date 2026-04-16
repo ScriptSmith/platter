@@ -12,11 +12,11 @@ import {
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { RequestHandler } from "express";
 import express from "express";
-import { installConsentRoutes } from "../oauth/consent.js";
+import { installConsentRoutes, toolScope } from "../oauth/consent.js";
 import { DualVerifier } from "../oauth/dual-verifier.js";
 import type { PlatterOAuthProvider } from "../oauth/provider.js";
 import type { ProcessRegistry } from "../process-registry.js";
-import type { SecurityConfig, ToolName } from "../security.js";
+import { ALL_TOOL_NAMES, isToolEnabled, type SecurityConfig, type ToolName } from "../security.js";
 import { type CreateServerOpts, createServer } from "../server.js";
 import type { JsRuntime } from "../tools/js.js";
 
@@ -27,6 +27,8 @@ interface SessionEntry {
   registeredTools: Map<ToolName, RegisteredTool>;
   transport: StreamableHTTPServerTransport;
   lastAccessed: number;
+  /** OAuth scopes granted to this session's token. `null` = unrestricted. */
+  grantedScopes: string[] | null;
 }
 
 export interface HttpControllerOptions {
@@ -115,11 +117,19 @@ export class HttpController {
    * causes the MCP SDK to broadcast `tools/list_changed` to each client.
    */
   broadcastToolToggle(tool: ToolName, enabled: boolean): void {
+    const scope = toolScope(tool);
     for (const session of this.sessions.values()) {
       const handle = session.registeredTools.get(tool);
       if (!handle) continue;
-      if (enabled) handle.enable();
-      else handle.disable();
+      if (enabled) {
+        // Only enable if the session's scopes allow it.
+        const scopes = session.grantedScopes;
+        if (!scopes || scopes.includes(scope) || scopes.includes("*")) {
+          handle.enable();
+        }
+      } else {
+        handle.disable();
+      }
     }
   }
 
@@ -189,17 +199,18 @@ export class HttpController {
       const issuerUrl = new URL(`${proto}://${this.opts.host}:${this.opts.port}`);
       const mcpServerUrl = new URL(`${proto}://${this.opts.host}:${this.opts.port}/mcp`);
 
+      const security = this.opts.security;
       app.use(
         mcpAuthRouter({
           provider,
           issuerUrl,
-          scopesSupported: [],
+          scopesSupported: ALL_TOOL_NAMES.map(toolScope),
           resourceServerUrl: mcpServerUrl,
           resourceName: "Platter MCP Server",
         }),
       );
 
-      installConsentRoutes(app, provider);
+      installConsentRoutes(app, provider, () => ALL_TOOL_NAMES.filter((t) => isToolEnabled(security, t)));
 
       const verifier = new DualVerifier(provider, () => this.authToken);
       mcpAuth = requireBearerAuth({
@@ -254,6 +265,17 @@ export class HttpController {
       }
 
       const created = createServer(this.opts.cwd, this.opts.security, this.opts.serverOpts);
+
+      // Per-client tool scoping: disable tools not granted by the OAuth token.
+      const scopes = req.auth?.scopes ?? null;
+      if (scopes && !scopes.includes("*")) {
+        for (const [name, handle] of created.registeredTools) {
+          if (!scopes.includes(toolScope(name))) {
+            handle.disable();
+          }
+        }
+      }
+
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => crypto.randomUUID(),
         onsessioninitialized: (id) => {
@@ -264,6 +286,7 @@ export class HttpController {
             registeredTools: created.registeredTools,
             transport,
             lastAccessed: Date.now(),
+            grantedScopes: scopes,
           });
         },
       });

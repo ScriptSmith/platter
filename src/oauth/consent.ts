@@ -1,18 +1,30 @@
 import type { Express } from "express";
 import express from "express";
+import type { ToolName } from "../security.js";
 import type { PlatterOAuthProvider } from "./provider.js";
 
-function consentPageHtml(requestId: string, clientName: string, scopes: string[]): string {
+interface ToolInfo {
+  name: ToolName;
+  scope: string;
+  checked: boolean;
+}
+
+function consentPageHtml(requestId: string, clientName: string, tools: ToolInfo[]): string {
   const escapedName = clientName
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 
-  const scopeList =
-    scopes.length > 0
-      ? scopes.map((s) => `<li>${s.replace(/</g, "&lt;")}</li>`).join("")
-      : "<li><em>default access</em></li>";
+  const toolCheckboxes = tools
+    .map(
+      (t) =>
+        `<label class="tool">
+        <input type="checkbox" name="scope" value="${t.scope}"${t.checked ? " checked" : ""}>
+        <span>${t.name}</span>
+      </label>`,
+    )
+    .join("\n      ");
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -50,21 +62,30 @@ function consentPageHtml(requestId: string, clientName: string, scopes: string[]
     font-weight: 600;
   }
   p { color: #aaa; margin-bottom: 1rem; font-size: 0.9rem; }
-  ul {
-    list-style: none;
+  .tools {
     margin-bottom: 1.5rem;
     padding: 0.75rem 1rem;
     background: #111;
     border-radius: 8px;
     border: 1px solid #2a2a2a;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
   }
-  li {
-    padding: 0.25rem 0;
+  .tool {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
     font-family: monospace;
     font-size: 0.85rem;
     color: #ccc;
+    cursor: pointer;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    transition: background 0.1s;
   }
-  li::before { content: "\\2022  "; color: #555; }
+  .tool:hover { background: #222; }
+  .tool input { accent-color: #4caf50; }
   .actions {
     display: flex;
     gap: 0.75rem;
@@ -88,10 +109,12 @@ function consentPageHtml(requestId: string, clientName: string, scopes: string[]
 <div class="card">
   <h1>Authorization Request</h1>
   <p><span class="client-name">${escapedName}</span> wants to connect to Platter.</p>
-  <p>Requested permissions:</p>
-  <ul>${scopeList}</ul>
+  <p>Grant access to:</p>
   <form method="POST" action="/oauth/consent">
     <input type="hidden" name="request_id" value="${requestId}">
+    <div class="tools">
+      ${toolCheckboxes}
+    </div>
     <div class="actions">
       <button type="submit" name="action" value="approve" class="approve" autofocus>Approve</button>
       <button type="submit" name="action" value="deny" class="deny">Deny</button>
@@ -102,7 +125,15 @@ function consentPageHtml(requestId: string, clientName: string, scopes: string[]
 </html>`;
 }
 
-export function installConsentRoutes(app: Express, provider: PlatterOAuthProvider): void {
+export function toolScope(tool: ToolName): string {
+  return `tools:${tool}`;
+}
+
+export function installConsentRoutes(
+  app: Express,
+  provider: PlatterOAuthProvider,
+  getEnabledTools: () => ToolName[],
+): void {
   app.get("/oauth/consent", (req, res) => {
     const requestId = req.query.request_id;
     if (typeof requestId !== "string" || !requestId) {
@@ -117,8 +148,19 @@ export function installConsentRoutes(app: Express, provider: PlatterOAuthProvide
     }
 
     const clientName = entry.client.client_name || entry.client.client_id;
-    const scopes = entry.params.scopes ?? [];
-    res.type("html").send(consentPageHtml(requestId, clientName, scopes));
+    const requestedScopes = new Set(entry.params.scopes ?? []);
+    const enabledTools = getEnabledTools();
+
+    // Build tool info: each globally-enabled tool gets a checkbox.
+    // Pre-checked if: client requested this scope, or client requested no
+    // specific scopes (default = all).
+    const tools: ToolInfo[] = enabledTools.map((name) => ({
+      name,
+      scope: toolScope(name),
+      checked: requestedScopes.size === 0 || requestedScopes.has(toolScope(name)),
+    }));
+
+    res.type("html").send(consentPageHtml(requestId, clientName, tools));
   });
 
   app.post("/oauth/consent", express.urlencoded({ extended: false }), (req, res) => {
@@ -132,7 +174,10 @@ export function installConsentRoutes(app: Express, provider: PlatterOAuthProvide
 
     try {
       if (action === "approve") {
-        const redirectUrl = provider.approveAuthorization(requestId);
+        // Collect granted scopes from checked checkboxes.
+        const raw = req.body?.scope;
+        const grantedScopes: string[] = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
+        const redirectUrl = provider.approveAuthorization(requestId, grantedScopes);
         res.redirect(redirectUrl);
       } else {
         const redirectUrl = provider.denyAuthorization(requestId);
