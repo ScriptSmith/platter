@@ -7,7 +7,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import packageJson from "../package.json";
 import { getConfigPath, loadConfig, type PlatterConfig, saveConfig } from "./config.js";
 import { PlatterClientsStore } from "./oauth/clients-store.js";
-import { PlatterOAuthProvider } from "./oauth/provider.js";
+import { type PendingAuthEvent, PlatterOAuthProvider } from "./oauth/provider.js";
 import { ALL_TOOL_NAMES, type SandboxFsMode, type SecurityConfig, type ToolName } from "./security.js";
 import { createServer } from "./server.js";
 import { HttpController } from "./tray/http-controller.js";
@@ -293,6 +293,15 @@ async function runHttp() {
   if (authMode === "oauth") {
     const store = new PlatterClientsStore();
     oauthProvider = new PlatterOAuthProvider(store);
+
+    // In non-tray mode, print the confirmation code to stderr so the
+    // operator can enter it on the consent page. In tray mode, the tray
+    // shows it as a desktop notification instead.
+    if (!trayMode) {
+      oauthProvider.on("pending", ({ clientName, confirmationCode }: PendingAuthEvent) => {
+        console.error(`[oauth] Authorization request from "${clientName}" — confirmation code: ${confirmationCode}`);
+      });
+    }
   }
 
   const http = new HttpController({

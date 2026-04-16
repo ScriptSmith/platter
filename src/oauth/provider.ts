@@ -42,12 +42,24 @@ interface RefreshEntry {
 interface PendingEntry {
   client: OAuthClientInformationFull;
   params: AuthorizationParams;
+  confirmationCode: string;
+  attempts: number;
   createdAt: number;
 }
 
 export interface PendingAuthEvent {
   requestId: string;
   clientName: string;
+  confirmationCode: string;
+}
+
+const CONFIRMATION_CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O, 1/I/L
+const CONFIRMATION_CODE_LENGTH = 6;
+const MAX_CONFIRMATION_ATTEMPTS = 5;
+
+function generateConfirmationCode(): string {
+  const bytes = crypto.randomBytes(CONFIRMATION_CODE_LENGTH);
+  return Array.from(bytes, (b) => CONFIRMATION_CODE_CHARS[b % CONFIRMATION_CODE_CHARS.length]).join("");
 }
 
 export class PlatterOAuthProvider extends EventEmitter implements OAuthServerProvider {
@@ -74,10 +86,11 @@ export class PlatterOAuthProvider extends EventEmitter implements OAuthServerPro
 
   async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
     const requestId = crypto.randomBytes(16).toString("base64url");
-    this.pending.set(requestId, { client, params, createdAt: Date.now() });
+    const confirmationCode = generateConfirmationCode();
+    this.pending.set(requestId, { client, params, confirmationCode, attempts: 0, createdAt: Date.now() });
 
     const clientName = client.client_name || client.client_id;
-    this.emit("pending", { requestId, clientName } satisfies PendingAuthEvent);
+    this.emit("pending", { requestId, clientName, confirmationCode } satisfies PendingAuthEvent);
 
     res.redirect(`/oauth/consent?request_id=${encodeURIComponent(requestId)}`);
   }
@@ -214,12 +227,27 @@ export class PlatterOAuthProvider extends EventEmitter implements OAuthServerPro
   }
 
   /**
-   * Approve a pending authorization. `grantedScopes` are the scopes the user
-   * selected on the consent page (tool checkboxes). Returns the redirect URL.
+   * Approve a pending authorization. Validates the confirmation code that was
+   * displayed out-of-band (tray notification / stderr). `grantedScopes` are
+   * the scopes the user selected on the consent page. Returns the redirect URL.
+   *
+   * Throws `"Invalid confirmation code"` on mismatch (the pending entry is
+   * preserved so the user can retry, up to MAX_CONFIRMATION_ATTEMPTS).
    */
-  approveAuthorization(requestId: string, grantedScopes: string[]): string {
+  approveAuthorization(requestId: string, confirmationCode: string, grantedScopes: string[]): string {
     const entry = this.pending.get(requestId);
     if (!entry) throw new Error("Authorization request not found or expired");
+
+    if (entry.attempts >= MAX_CONFIRMATION_ATTEMPTS) {
+      this.pending.delete(requestId);
+      throw new Error("Too many failed attempts");
+    }
+
+    if (confirmationCode.toUpperCase() !== entry.confirmationCode) {
+      entry.attempts++;
+      throw new Error("Invalid confirmation code");
+    }
+
     this.pending.delete(requestId);
 
     const code = crypto.randomBytes(32).toString("base64url");

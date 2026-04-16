@@ -163,9 +163,12 @@ The flow:
 1. Client discovers `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource/mcp`
 2. Client registers via `POST /register` ([RFC 7591](https://datatracker.ietf.org/doc/html/rfc7591) dynamic client registration)
 3. Client initiates Authorization Code + PKCE flow via `/authorize`
-4. User sees a consent page and approves/denies the request
-5. Client exchanges the authorization code for tokens at `/token`
-6. Subsequent requests use `Authorization: Bearer <access_token>`
+4. A **confirmation code** is displayed out-of-band (printed to stderr, or shown as a desktop notification in tray mode)
+5. User sees a consent page, enters the confirmation code, selects which tools to grant, and approves or denies the request
+6. Client exchanges the authorization code for tokens at `/token`
+7. Subsequent requests use `Authorization: Bearer <access_token>`
+
+The confirmation code proves that the person approving the request has access to the platter process — a remote attacker who can reach the consent page cannot approve without it. Codes are single-use and expire after 5 minutes, with a maximum of 5 attempts.
 
 Access tokens expire after 1 hour and can be refreshed. Client registrations are persisted to `~/.config/platter/clients.json`. A static bearer token is also accepted as a fallback for clients that don't support OAuth.
 
@@ -276,6 +279,7 @@ This installs:
 
 - **TLS (HTTPS)** - optional transport encryption via `--tls-cert` and `--tls-key`. Uses Node.js `https` module with PEM-encoded certificate and key files.
 - **OAuth 2.1 + PKCE** (`--auth oauth`, default) - MCP clients authenticate via Authorization Code flow with PKCE ([RFC 7636](https://datatracker.ietf.org/doc/html/rfc7636)). Supports dynamic client registration ([RFC 7591](https://datatracker.ietf.org/doc/html/rfc7591)) and token revocation ([RFC 7009](https://datatracker.ietf.org/doc/html/rfc7009)).
+- **Out-of-band consent confirmation** - the OAuth consent page requires a confirmation code that is only displayed to the platter operator (via stderr or desktop notification). This prevents CSRF and cross-origin attacks from auto-approving authorization requests. The consent page is also protected with `X-Frame-Options: DENY`, `Sec-Fetch-Site` validation, and `Origin` header checking.
 - **Bearer token authentication** - a static bearer token (RFC 6750) is available as a fallback in `oauth` mode and as the sole method in `bearer` mode. A random 256-bit token is generated at startup unless you provide `--auth-token` or set `--auth none`.
 - **Host header validation** - prevents [DNS rebinding attacks](https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-w48q-cv73-mx4w). Localhost binds accept only `127.0.0.1`, `localhost`, and `::1`; remote binds accept only the specified `--host`.
 - **Origin validation** - when `--cors-origin` is set to a specific origin, requests with a mismatched `Origin` header are actively rejected with 403 (not just filtered by CORS response headers).

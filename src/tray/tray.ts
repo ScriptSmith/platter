@@ -129,9 +129,15 @@ export async function runTray(opts: RunTrayOptions): Promise<{ dispose: () => Pr
   // auto-open a second window here — that would cause a duplicate tab.
   const oauthProvider = opts.oauthProvider;
   if (oauthProvider) {
-    oauthProvider.on("pending", ({ clientName }: { clientName: string }) => {
-      notify("Authorization request", `${clientName} wants to connect to Platter`);
-    });
+    oauthProvider.on(
+      "pending",
+      ({ clientName, confirmationCode }: { clientName: string; confirmationCode: string }) => {
+        notify(
+          "Authorization request",
+          `${clientName} wants to connect to Platter\nConfirmation code: ${confirmationCode}`,
+        );
+      },
+    );
   }
 
   return {

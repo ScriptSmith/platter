@@ -9,7 +9,7 @@ interface ToolInfo {
   checked: boolean;
 }
 
-function consentPageHtml(requestId: string, clientName: string, tools: ToolInfo[]): string {
+function consentPageHtml(requestId: string, clientName: string, tools: ToolInfo[], error?: string): string {
   const escapedName = clientName
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -25,6 +25,10 @@ function consentPageHtml(requestId: string, clientName: string, tools: ToolInfo[
       </label>`,
     )
     .join("\n      ");
+
+  const errorHtml = error
+    ? `<div class="error" role="alert">${error.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</div>`
+    : "";
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -62,6 +66,47 @@ function consentPageHtml(requestId: string, clientName: string, tools: ToolInfo[
     font-weight: 600;
   }
   p { color: #aaa; margin-bottom: 1rem; font-size: 0.9rem; }
+  .confirm {
+    margin-bottom: 1.25rem;
+  }
+  .confirm label {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 500;
+    margin-bottom: 0.25rem;
+    color: #ccc;
+  }
+  .confirm .hint {
+    font-size: 0.8rem;
+    color: #888;
+    margin-bottom: 0.5rem;
+  }
+  .confirm input {
+    width: 100%;
+    padding: 0.55rem 0.75rem;
+    background: #111;
+    border: 1px solid #444;
+    border-radius: 6px;
+    color: #fff;
+    font-family: monospace;
+    font-size: 1.1rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    text-align: center;
+  }
+  .confirm input:focus {
+    outline: none;
+    border-color: #7eb8ff;
+  }
+  .error {
+    background: #3a1c1c;
+    border: 1px solid #6b2c2c;
+    color: #f5a5a5;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    margin-bottom: 1rem;
+  }
   .tools {
     margin-bottom: 1.5rem;
     padding: 0.75rem 1rem;
@@ -109,14 +154,22 @@ function consentPageHtml(requestId: string, clientName: string, tools: ToolInfo[
 <div class="card">
   <h1>Authorization Request</h1>
   <p><span class="client-name">${escapedName}</span> wants to connect to Platter.</p>
-  <p>Grant access to:</p>
+  ${errorHtml}
   <form method="POST" action="/oauth/consent">
     <input type="hidden" name="request_id" value="${requestId}">
+    <div class="confirm">
+      <label for="confirmation_code">Confirmation code</label>
+      <p class="hint">Enter the code shown in your terminal or system tray</p>
+      <input type="text" id="confirmation_code" name="confirmation_code" required
+             autocomplete="off" spellcheck="false" maxlength="6"
+             pattern="[A-Za-z0-9]{6}" autofocus>
+    </div>
+    <p>Grant access to:</p>
     <div class="tools">
       ${toolCheckboxes}
     </div>
     <div class="actions">
-      <button type="submit" name="action" value="approve" class="approve" autofocus>Approve</button>
+      <button type="submit" name="action" value="approve" class="approve">Approve</button>
       <button type="submit" name="action" value="deny" class="deny">Deny</button>
     </div>
   </form>
@@ -127,6 +180,55 @@ function consentPageHtml(requestId: string, clientName: string, tools: ToolInfo[
 
 export function toolScope(tool: ToolName): string {
   return `tools:${tool}`;
+}
+
+const SECURITY_HEADERS = {
+  "X-Frame-Options": "DENY",
+  "Content-Security-Policy": "frame-ancestors 'none'",
+  "X-Content-Type-Options": "nosniff",
+};
+
+function setSecurityHeaders(res: import("express").Response): void {
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) {
+    res.setHeader(k, v);
+  }
+}
+
+/**
+ * Reject cross-site requests to the consent POST. Uses Sec-Fetch-Site when
+ * available (unforgeable in modern browsers), falls back to Origin header.
+ * Returns true if the request was rejected.
+ */
+function rejectCrossSite(req: import("express").Request, res: import("express").Response): boolean {
+  const fetchSite = req.headers["sec-fetch-site"] as string | undefined;
+  if (fetchSite) {
+    // "same-origin" and "none" (direct navigation) are allowed.
+    // "cross-site" and "same-site" (different subdomain) are not.
+    if (fetchSite !== "same-origin" && fetchSite !== "none") {
+      res.status(403).json({ error: "Cross-site consent submissions are not allowed" });
+      return true;
+    }
+    return false;
+  }
+
+  // Fallback: check Origin header. Present on cross-origin POSTs in all
+  // modern browsers. If present and doesn't match Host, reject.
+  const origin = req.headers.origin;
+  if (origin) {
+    try {
+      const originHost = new URL(origin).host;
+      const requestHost = req.headers.host;
+      if (requestHost && originHost !== requestHost) {
+        res.status(403).json({ error: "Cross-origin consent submissions are not allowed" });
+        return true;
+      }
+    } catch {
+      res.status(403).json({ error: "Invalid Origin header" });
+      return true;
+    }
+  }
+
+  return false;
 }
 
 export function installConsentRoutes(
@@ -160,10 +262,23 @@ export function installConsentRoutes(
       checked: requestedScopes.size === 0 || requestedScopes.has(toolScope(name)),
     }));
 
-    res.type("html").send(consentPageHtml(requestId, clientName, tools));
+    const error = req.query.error;
+    const errorMsg =
+      error === "invalid_code"
+        ? "Invalid confirmation code. Check your terminal or system tray and try again."
+        : error === "too_many_attempts"
+          ? "Too many failed attempts. Please start a new authorization request."
+          : undefined;
+
+    setSecurityHeaders(res);
+    res.type("html").send(consentPageHtml(requestId, clientName, tools, errorMsg));
   });
 
   app.post("/oauth/consent", express.urlencoded({ extended: false }), (req, res) => {
+    setSecurityHeaders(res);
+
+    if (rejectCrossSite(req, res)) return;
+
     const requestId = req.body?.request_id;
     const action = req.body?.action;
 
@@ -174,17 +289,34 @@ export function installConsentRoutes(
 
     try {
       if (action === "approve") {
-        // Collect granted scopes from checked checkboxes.
+        const confirmationCode = req.body?.confirmation_code;
+        if (typeof confirmationCode !== "string" || !confirmationCode) {
+          res.redirect(`/oauth/consent?request_id=${encodeURIComponent(requestId)}&error=invalid_code`);
+          return;
+        }
+
+        // Collect granted scopes from checked checkboxes and filter to
+        // only those corresponding to currently-enabled tools.
+        const enabledScopes = new Set(getEnabledTools().map(toolScope));
         const raw = req.body?.scope;
-        const grantedScopes: string[] = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
-        const redirectUrl = provider.approveAuthorization(requestId, grantedScopes);
+        const rawScopes: string[] = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
+        const grantedScopes = rawScopes.filter((s) => enabledScopes.has(s));
+
+        const redirectUrl = provider.approveAuthorization(requestId, confirmationCode, grantedScopes);
         res.redirect(redirectUrl);
       } else {
         const redirectUrl = provider.denyAuthorization(requestId);
         res.redirect(redirectUrl);
       }
-    } catch {
-      res.status(404).json({ error: "Authorization request not found or expired" });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "";
+      if (msg === "Invalid confirmation code") {
+        res.redirect(`/oauth/consent?request_id=${encodeURIComponent(requestId)}&error=invalid_code`);
+      } else if (msg === "Too many failed attempts") {
+        res.redirect(`/oauth/consent?request_id=${encodeURIComponent(requestId)}&error=too_many_attempts`);
+      } else {
+        res.status(404).json({ error: "Authorization request not found or expired" });
+      }
     }
   });
 }
