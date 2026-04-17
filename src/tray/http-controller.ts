@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { Server as HttpsServer, Server } from "node:http";
 import https from "node:https";
+import { resolve, sep } from "node:path";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { getOAuthProtectedResourceMetadataUrl, mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -12,9 +13,9 @@ import {
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { RequestHandler } from "express";
 import express from "express";
-import { installConsentRoutes, toolScope } from "../oauth/consent.js";
+import { type GlobalRestrictions, installConsentRoutes, toolScope } from "../oauth/consent.js";
 import { DualVerifier } from "../oauth/dual-verifier.js";
-import type { PlatterOAuthProvider } from "../oauth/provider.js";
+import type { ClientGrant, PlatterOAuthProvider } from "../oauth/provider.js";
 import type { ProcessRegistry } from "../process-registry.js";
 import { ALL_TOOL_NAMES, isToolEnabled, type SecurityConfig, type ToolName } from "../security.js";
 import { type CreateServerOpts, createServer } from "../server.js";
@@ -27,8 +28,8 @@ interface SessionEntry {
   registeredTools: Map<ToolName, RegisteredTool>;
   transport: StreamableHTTPServerTransport;
   lastAccessed: number;
-  /** OAuth scopes granted to this session's token. `null` = unrestricted. */
-  grantedScopes: string[] | null;
+  /** Per-client grant attached to the session's token. `null` = unrestricted (legacy bearer). */
+  grant: ClientGrant | null;
 }
 
 export interface HttpControllerOptions {
@@ -117,14 +118,14 @@ export class HttpController {
    * causes the MCP SDK to broadcast `tools/list_changed` to each client.
    */
   broadcastToolToggle(tool: ToolName, enabled: boolean): void {
-    const scope = toolScope(tool);
     for (const session of this.sessions.values()) {
       const handle = session.registeredTools.get(tool);
       if (!handle) continue;
       if (enabled) {
-        // Only enable if the session's scopes allow it.
-        const scopes = session.grantedScopes;
-        if (!scopes || scopes.includes(scope) || scopes.includes("*")) {
+        // Only re-enable if the session's grant includes this tool. A null
+        // grant (legacy bearer) means unrestricted.
+        const grant = session.grant;
+        if (!grant || grant.tools.includes(tool)) {
           handle.enable();
         }
       } else {
@@ -210,7 +211,16 @@ export class HttpController {
         }),
       );
 
-      installConsentRoutes(app, provider, () => ALL_TOOL_NAMES.filter((t) => isToolEnabled(security, t)));
+      installConsentRoutes(
+        app,
+        provider,
+        (): GlobalRestrictions => ({
+          enabledTools: ALL_TOOL_NAMES.filter((t) => isToolEnabled(security, t)),
+          allowedPaths: security.allowedPaths,
+          allowedCommands: security.allowedCommands?.map((r) => r.source),
+          sandbox: security.sandbox,
+        }),
+      );
 
       const verifier = new DualVerifier(provider, () => this.authToken);
       mcpAuth = requireBearerAuth({
@@ -264,17 +274,11 @@ export class HttpController {
         return;
       }
 
-      const created = createServer(this.opts.cwd, this.opts.security, this.opts.serverOpts);
-
-      // Per-client tool scoping: disable tools not granted by the OAuth token.
-      const scopes = req.auth?.scopes ?? null;
-      if (scopes && !scopes.includes("*")) {
-        for (const [name, handle] of created.registeredTools) {
-          if (!scopes.includes(toolScope(name))) {
-            handle.disable();
-          }
-        }
-      }
+      // Narrow the global security config by the per-client grant (if any).
+      // Legacy bearer tokens carry no grant → the global config is used as-is.
+      const grant = (req.auth?.extra?.grant ?? null) as ClientGrant | null;
+      const sessionSecurity = buildSessionSecurity(this.opts.security, grant);
+      const created = createServer(this.opts.cwd, sessionSecurity, this.opts.serverOpts);
 
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => crypto.randomUUID(),
@@ -286,7 +290,7 @@ export class HttpController {
             registeredTools: created.registeredTools,
             transport,
             lastAccessed: Date.now(),
-            grantedScopes: scopes,
+            grant,
           });
         },
       });
@@ -406,4 +410,80 @@ export class HttpController {
     });
     await Promise.all(promises);
   }
+}
+
+/**
+ * Narrow a global security config by a per-client grant. Grants can only
+ * narrow (never widen), with one exception: if the global config doesn't
+ * enable the sandbox, a grant CAN turn it on for that client.
+ *
+ * When `grant` is null (legacy bearer token), the global config is returned
+ * as-is minus the `onToolsChanged` hook — runtime toggles reach per-session
+ * tools via `broadcastToolToggle`, not via each session's own hook.
+ */
+export function buildSessionSecurity(global: SecurityConfig, grant: ClientGrant | null): SecurityConfig {
+  if (!grant) {
+    const { onToolsChanged: _drop, ...rest } = global;
+    return { ...rest };
+  }
+
+  const sessionSecurity: SecurityConfig = {};
+
+  // Tools: intersection of global enabled and grant-requested.
+  const grantTools = new Set<ToolName>(grant.tools);
+  const globalTools = global.allowedTools ?? new Set<ToolName>(ALL_TOOL_NAMES);
+  const intersected = new Set<ToolName>();
+  for (const t of grantTools) {
+    if (globalTools.has(t)) intersected.add(t);
+  }
+  sessionSecurity.allowedTools = intersected;
+
+  // Paths: grant paths must be subpaths of at least one global allowed path
+  // (if the global config has a restriction). Otherwise the grant paths apply
+  // directly. Grant paths are resolved to absolute form.
+  if (grant.allowedPaths?.length) {
+    const grantResolved = grant.allowedPaths.map((p) => resolve(p));
+    if (global.allowedPaths?.length) {
+      const globalPaths = global.allowedPaths;
+      sessionSecurity.allowedPaths = grantResolved.filter((g) =>
+        globalPaths.some((allowed) => g === allowed || g.startsWith(allowed + sep)),
+      );
+    } else {
+      sessionSecurity.allowedPaths = grantResolved;
+    }
+  } else if (global.allowedPaths) {
+    sessionSecurity.allowedPaths = global.allowedPaths;
+  }
+
+  // Commands: grant regex strings compiled to anchored patterns. Assumed to
+  // already represent the admin's intent (they typed them on the consent
+  // page in response to the displayed global restriction). If the grant has
+  // none, fall back to the global config.
+  if (grant.allowedCommands?.length) {
+    sessionSecurity.allowedCommands = grant.allowedCommands.flatMap((pat) => {
+      try {
+        return [new RegExp(`^(?:${pat})$`)];
+      } catch {
+        return [];
+      }
+    });
+  } else if (global.allowedCommands) {
+    sessionSecurity.allowedCommands = global.allowedCommands;
+  }
+
+  // Sandbox: the global config wins whenever it's on (clients can't weaken).
+  // Otherwise, if the grant opts in, use the grant's sandbox config.
+  if (global.sandbox?.enabled) {
+    sessionSecurity.sandbox = global.sandbox;
+  } else if (grant.sandbox?.enabled) {
+    sessionSecurity.sandbox = {
+      enabled: true,
+      fsMode: grant.sandbox.fsMode,
+      allowedUrls: grant.sandbox.allowedUrls,
+    };
+  } else if (global.sandbox) {
+    sessionSecurity.sandbox = global.sandbox;
+  }
+
+  return sessionSecurity;
 }

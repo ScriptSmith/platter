@@ -9,7 +9,30 @@ import type {
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { Response } from "express";
+import type { SandboxFsMode, ToolName } from "../security.js";
 import type { PlatterClientsStore } from "./clients-store.js";
+
+/**
+ * Per-client security grant issued via the consent page. `allowedPaths`,
+ * `allowedCommands`, and `sandbox` only narrow the global restrictions —
+ * never widen them (except that a grant can turn sandbox on when it's off
+ * globally). `undefined` for any optional field means "no additional
+ * narrowing from this grant".
+ */
+export interface ClientGrant {
+  tools: ToolName[];
+  allowedPaths?: string[];
+  allowedCommands?: string[];
+  sandbox?: {
+    enabled: boolean;
+    fsMode: SandboxFsMode;
+    allowedUrls?: string[];
+  };
+}
+
+function grantToScopes(grant: ClientGrant): string[] {
+  return grant.tools.map((t) => `tools:${t}`);
+}
 
 // TTLs
 const CODE_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -21,20 +44,20 @@ const SWEEP_INTERVAL_MS = 60_000;
 interface CodeEntry {
   clientId: string;
   params: AuthorizationParams;
-  grantedScopes: string[];
+  grant: ClientGrant;
   createdAt: number;
 }
 
 interface TokenEntry {
   clientId: string;
-  scopes: string[];
+  grant: ClientGrant;
   expiresAt: number;
   resource?: URL;
 }
 
 interface RefreshEntry {
   clientId: string;
-  scopes: string[];
+  grant: ClientGrant;
   expiresAt: number;
   resource?: URL;
 }
@@ -115,18 +138,18 @@ export class PlatterOAuthProvider extends EventEmitter implements OAuthServerPro
 
     const accessToken = crypto.randomBytes(32).toString("base64url");
     const refreshToken = crypto.randomBytes(32).toString("base64url");
-    const scopes = entry.grantedScopes;
+    const grant = entry.grant;
 
     this.tokens.set(accessToken, {
       clientId: client.client_id,
-      scopes,
+      grant,
       expiresAt: Date.now() + ACCESS_TOKEN_TTL_MS,
       resource: entry.params.resource,
     });
 
     this.refreshTokens.set(refreshToken, {
       clientId: client.client_id,
-      scopes,
+      grant,
       expiresAt: Date.now() + REFRESH_TOKEN_TTL_MS,
       resource: entry.params.resource,
     });
@@ -136,14 +159,14 @@ export class PlatterOAuthProvider extends EventEmitter implements OAuthServerPro
       token_type: "bearer",
       expires_in: ACCESS_TOKEN_TTL_MS / 1000,
       refresh_token: refreshToken,
-      scope: scopes.join(" "),
+      scope: grantToScopes(grant).join(" "),
     };
   }
 
   async exchangeRefreshToken(
     client: OAuthClientInformationFull,
     refreshToken: string,
-    scopes?: string[],
+    _scopes?: string[],
   ): Promise<OAuthTokens> {
     const entry = this.refreshTokens.get(refreshToken);
     if (!entry) throw new Error("Invalid refresh token");
@@ -158,20 +181,22 @@ export class PlatterOAuthProvider extends EventEmitter implements OAuthServerPro
     // Revoke old refresh token (rotation).
     this.refreshTokens.delete(refreshToken);
 
-    const newScopes = scopes ?? entry.scopes;
+    // Scope narrowing on refresh isn't supported — the grant was decided on
+    // the consent page and is carried through untouched.
+    const grant = entry.grant;
     const newAccessToken = crypto.randomBytes(32).toString("base64url");
     const newRefreshToken = crypto.randomBytes(32).toString("base64url");
 
     this.tokens.set(newAccessToken, {
       clientId: client.client_id,
-      scopes: newScopes,
+      grant,
       expiresAt: Date.now() + ACCESS_TOKEN_TTL_MS,
       resource: entry.resource,
     });
 
     this.refreshTokens.set(newRefreshToken, {
       clientId: client.client_id,
-      scopes: newScopes,
+      grant,
       expiresAt: Date.now() + REFRESH_TOKEN_TTL_MS,
       resource: entry.resource,
     });
@@ -181,7 +206,7 @@ export class PlatterOAuthProvider extends EventEmitter implements OAuthServerPro
       token_type: "bearer",
       expires_in: ACCESS_TOKEN_TTL_MS / 1000,
       refresh_token: newRefreshToken,
-      scope: newScopes.join(" "),
+      scope: grantToScopes(grant).join(" "),
     };
   }
 
@@ -195,9 +220,10 @@ export class PlatterOAuthProvider extends EventEmitter implements OAuthServerPro
     return {
       token,
       clientId: entry.clientId,
-      scopes: entry.scopes,
+      scopes: grantToScopes(entry.grant),
       expiresAt: Math.floor(entry.expiresAt / 1000),
       resource: entry.resource,
+      extra: { grant: entry.grant },
     };
   }
 
@@ -228,13 +254,14 @@ export class PlatterOAuthProvider extends EventEmitter implements OAuthServerPro
 
   /**
    * Approve a pending authorization. Validates the confirmation code that was
-   * displayed out-of-band (tray notification / stderr). `grantedScopes` are
-   * the scopes the user selected on the consent page. Returns the redirect URL.
+   * displayed out-of-band (tray notification / stderr). `grant` captures the
+   * tool, path, command, and sandbox choices from the consent page. Returns
+   * the redirect URL.
    *
    * Throws `"Invalid confirmation code"` on mismatch (the pending entry is
    * preserved so the user can retry, up to MAX_CONFIRMATION_ATTEMPTS).
    */
-  approveAuthorization(requestId: string, confirmationCode: string, grantedScopes: string[]): string {
+  approveAuthorization(requestId: string, confirmationCode: string, grant: ClientGrant): string {
     const entry = this.pending.get(requestId);
     if (!entry) throw new Error("Authorization request not found or expired");
 
@@ -254,7 +281,7 @@ export class PlatterOAuthProvider extends EventEmitter implements OAuthServerPro
     this.codes.set(code, {
       clientId: entry.client.client_id,
       params: entry.params,
-      grantedScopes,
+      grant,
       createdAt: Date.now(),
     });
 

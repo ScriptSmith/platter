@@ -24,10 +24,13 @@ export class DualVerifier implements OAuthTokenVerifier {
     // Legacy static bearer token.
     const legacy = this.getLegacyToken();
     if (legacy && token === legacy) {
+      // No grant attached — per-session security falls back to the global
+      // config unmodified (legacy bearer is an admin-level credential).
       return {
         token,
         clientId: "legacy-bearer",
         scopes: ["*"],
+        extra: { grant: null },
       };
     }
 
