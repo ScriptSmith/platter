@@ -1,20 +1,42 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"
-     fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
-  <!-- Circular background -->
-  <circle cx="64" cy="64" r="62" fill="#e8e8e8" stroke="none"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#334155"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="dome" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#cbd5e0"/>
+    </linearGradient>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f1f5f9"/>
+      <stop offset="100%" stop-color="#94a3b8"/>
+    </linearGradient>
+  </defs>
 
-  <!-- Scale icon to fit inside circle with padding -->
-  <g transform="translate(64,64) scale(0.85) translate(-64,-64)">
-    <!-- Cloche dome: half-ellipse sitting on the plate -->
-    <path d="M 16 98 C 16 42, 40 22, 64 22 C 88 22, 112 42, 112 98"
-          stroke-width="9" fill="currentColor" fill-opacity="0.15"/>
+  <!-- Rounded-square badge background -->
+  <rect x="2" y="2" width="124" height="124" rx="28" fill="url(#bg)"/>
+  <rect x="2.5" y="2.5" width="123" height="123" rx="27.5" fill="none" stroke="#ffffff" stroke-opacity="0.08"/>
 
-    <!-- Handle knob on top of the dome -->
-    <circle cx="64" cy="14" r="9" fill="currentColor"/>
-
-    <!-- Plate: thick horizontal bar under the dome -->
-    <line x1="12" y1="102" x2="116" y2="102" stroke-width="9"/>
-    <line x1="22" y1="112" x2="106" y2="112" stroke-width="6" opacity="0.55"/>
+  <!-- Steam curls -->
+  <g fill="none" stroke="#cbd5e0" stroke-width="4" stroke-linecap="round" opacity="0.75">
+    <path d="M 44 30 C 40 22, 50 18, 46 10"/>
+    <path d="M 64 26 C 60 18, 70 14, 66 6"/>
+    <path d="M 84 30 C 80 22, 90 18, 86 10"/>
   </g>
+
+  <!-- Plate -->
+  <rect x="10" y="97" width="108" height="9" rx="4.5" fill="url(#plate)"/>
+  <rect x="18" y="108" width="92" height="5" rx="2.5" fill="#ffffff" opacity="0.35"/>
+
+  <!-- Cloche dome -->
+  <path d="M 22 98 C 22 58, 40 44, 64 44 C 88 44, 106 58, 106 98 Z" fill="url(#dome)"/>
+
+  <!-- Dome highlight -->
+  <path d="M 38 88 C 36 64, 48 52, 58 52" stroke="#ffffff" stroke-width="5" stroke-linecap="round" fill="none" opacity="0.55"/>
+
+  <!-- Knob -->
+  <rect x="61" y="38" width="6" height="7" fill="#cbd5e0"/>
+  <circle cx="64" cy="36" r="7" fill="url(#dome)"/>
 </svg>
