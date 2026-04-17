@@ -4,7 +4,7 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 COPY src/ src/
 COPY tsconfig.json ./
-RUN bun build src/index.ts --compile --outfile=platter
+RUN bun build src/index.ts --compile --external x11 --outfile=platter
 
 FROM debian:bookworm-slim
 RUN apt-get update \

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 
 const ATTRS = ["service", "platter", "account", "auth-token"];
 
@@ -36,7 +36,7 @@ export async function clearFromKeyring(): Promise<void> {
 
 function run(cmd: string, args: string[], input?: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    let child;
+    let child: ChildProcess;
     try {
       child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"] });
     } catch (err: any) {

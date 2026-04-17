@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 
 type Candidate = { cmd: string; args: string[] };
 
@@ -30,7 +30,7 @@ export async function copyToClipboard(text: string): Promise<string> {
 
 function run(cmd: string, args: string[], input: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    let child;
+    let child: ChildProcess;
     try {
       child = spawn(cmd, args, { stdio: ["pipe", "ignore", "pipe"] });
     } catch (err: any) {
