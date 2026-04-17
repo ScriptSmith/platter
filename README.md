@@ -4,6 +4,7 @@
 
 # platter
 
+[![SafeSkill 77/100](https://img.shields.io/badge/SafeSkill-77%2F100_Passes%20with%20Notes-yellow)](https://safeskill.dev/scan/scriptsmith-platter)
 *Your computer, served on a platter.*
 
 MCP server that exposes **Read**, **Write**, **Edit**, **Bash**, **Glob**, **Grep**, and **JS** tools over Stdio and StreamableHTTP transports. Built with [Bun](https://bun.sh), compiles to standalone executables.
