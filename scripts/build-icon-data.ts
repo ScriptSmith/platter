@@ -7,7 +7,7 @@
  * still get a crisp icon straight out of IconPixmap.
  *
  * Run `bun run build:icons` (or just `bun run compile`) to regenerate.
- * Requires ImageMagick (`magick`) on PATH.
+ * Requires ImageMagick — either IM7 (`magick`) or IM6 (`convert`) on PATH.
  */
 
 import { execFileSync } from "node:child_process";
@@ -23,11 +23,25 @@ if (!existsSync(SVG_PATH)) {
   process.exit(1);
 }
 
+function findImageMagick(): string {
+  for (const bin of ["magick", "convert"]) {
+    try {
+      execFileSync(bin, ["-version"], { stdio: "ignore" });
+      return bin;
+    } catch {
+      // try next candidate
+    }
+  }
+  throw new Error("ImageMagick not found — install IM7 (`magick`) or IM6 (`convert`) on PATH.");
+}
+
+const IM_BIN = findImageMagick();
+
 function rasterize(size: number): Buffer {
   const tmp = `/tmp/platter-icon-${size}.rgba`;
   try {
     execFileSync(
-      "magick",
+      IM_BIN,
       [
         "-background",
         "none",
