@@ -290,7 +290,7 @@ function buildHandlers(ctx: HandlerContext): Map<number, () => void | Promise<vo
   });
 
   h.set(ID.openWebApp, () => {
-    openWebApp();
+    openWebApp(ctx.http.url());
   });
 
   h.set(ID.openConfig, () => {
@@ -406,8 +406,9 @@ const APP_BROWSERS = ["chromium", "chromium-browser", "google-chrome", "google-c
 const WEBAPP_WIDTH = 1280;
 const WEBAPP_HEIGHT = 800;
 
-function openWebApp(): void {
-  tryAppBrowser(0);
+function openWebApp(mcpServerUrl: string): void {
+  const url = `${WEBAPP_URL}/chat?mcp_server_url=${encodeURIComponent(mcpServerUrl)}`;
+  tryAppBrowser(0, url);
 }
 
 function getScreenCenter(): { x: number; y: number } | null {
@@ -423,21 +424,26 @@ function getScreenCenter(): { x: number; y: number } | null {
   return null;
 }
 
-function tryAppBrowser(index: number): void {
+function tryAppBrowser(index: number, url: string): void {
   if (index >= APP_BROWSERS.length) {
     // No app-mode browser found — fall back to xdg-open.
-    xdgOpen(WEBAPP_URL);
+    xdgOpen(url);
     return;
   }
 
   const browser = APP_BROWSERS[index];
-  const args = [`--app=${WEBAPP_URL}`, `--window-size=${WEBAPP_WIDTH},${WEBAPP_HEIGHT}`, "--ozone-platform=x11"];
+  const args = [
+    `--app=${url}`,
+    `--window-size=${WEBAPP_WIDTH},${WEBAPP_HEIGHT}`,
+    "--ozone-platform=x11",
+    "--disable-features=LocalNetworkAccessChecks",
+  ];
   const center = getScreenCenter();
   if (center) {
     args.push(`--window-position=${center.x},${center.y}`);
   }
   const child = spawn(browser, args, { stdio: "ignore", detached: true });
-  child.on("error", () => tryAppBrowser(index + 1));
+  child.on("error", () => tryAppBrowser(index + 1, url));
   child.unref();
 }
 
