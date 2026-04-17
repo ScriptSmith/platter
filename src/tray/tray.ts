@@ -1,4 +1,7 @@
 import { execSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import dbus from "dbus-next";
 import packageJson from "../../package.json";
 import { getConfigDir, getConfigPath, getLogPath, type PlatterConfig, saveConfig } from "../config.js";
@@ -7,6 +10,7 @@ import type { ActivityMonitor, InvocationRecord } from "./activity-monitor.js";
 import { copyToClipboard } from "./clipboard.js";
 import { DBusMenu, type MenuItem } from "./dbus-menu.js";
 import type { HttpController } from "./http-controller.js";
+import { PLATTER_ICON_SVG } from "./icon-data.js";
 import { saveToKeyring } from "./keyring.js";
 import { StatusNotifierItem } from "./sni.js";
 
@@ -168,6 +172,22 @@ export async function runTray(opts: RunTrayOptions): Promise<{ dispose: () => Pr
         notify(
           "Authorization request",
           `${clientName} wants to connect to Platter\nConfirmation code: ${confirmationCode}`,
+          {
+            // Give the user longer to act on OAuth prompts than the usual
+            // transient "copied" toast.
+            expireMs: 30_000,
+            actions: [
+              {
+                id: "copy-code",
+                label: "Copy code",
+                onSelected: () => {
+                  copyToClipboard(confirmationCode).catch((err) => {
+                    notify("Clipboard failed", err?.message ?? String(err));
+                  });
+                },
+              },
+            ],
+          },
         );
       },
     );
@@ -536,14 +556,78 @@ function findById(dbusMenu: DBusMenu, id: number): MenuItem | undefined {
 
 // ---- Desktop notifications / xdg-open --------------------------------------
 
-function notify(title: string, body: string): void {
-  const child = spawn("notify-send", ["--app-name=Platter", title, body], {
-    stdio: "ignore",
-    detached: true,
+/**
+ * Absolute path to a cached copy of the Platter SVG, materialized on first
+ * use so `notify-send --icon=<path>` works even when the binary was run
+ * without install.sh laying down the hicolor theme entry.
+ */
+let cachedIconPath: string | undefined;
+function ensureIconPath(): string | undefined {
+  if (cachedIconPath !== undefined) return cachedIconPath || undefined;
+  try {
+    const xdg = process.env.XDG_CACHE_HOME;
+    const base = xdg && xdg.length > 0 ? xdg : join(homedir(), ".cache");
+    const dir = join(base, "platter");
+    const path = join(dir, "platter.svg");
+    if (!existsSync(path)) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path, PLATTER_ICON_SVG);
+    }
+    cachedIconPath = path;
+    return path;
+  } catch {
+    cachedIconPath = "";
+    return undefined;
+  }
+}
+
+interface NotifyAction {
+  id: string;
+  label: string;
+  onSelected: () => void;
+}
+
+interface NotifyOptions {
+  /** notify-send `--expire-time` in milliseconds. Defaults to 10s. */
+  expireMs?: number;
+  actions?: NotifyAction[];
+}
+
+const DEFAULT_NOTIFY_EXPIRE_MS = 10_000;
+
+function notify(title: string, body: string, opts: NotifyOptions = {}): void {
+  const icon = ensureIconPath();
+  const expireMs = opts.expireMs ?? DEFAULT_NOTIFY_EXPIRE_MS;
+  const actions = opts.actions ?? [];
+
+  const args = ["--app-name=Platter", `--expire-time=${expireMs}`];
+  if (icon) args.push(`--app-icon=${icon}`);
+  for (const a of actions) args.push(`--action=${a.id}=${a.label}`);
+  args.push(title, body);
+
+  // `--action` implies `--wait`, so notify-send won't exit until the user
+  // responds or the notification expires. Pipe stdout so we can dispatch the
+  // chosen action; unref'd so a pending notification doesn't pin the tray.
+  const wantsOutput = actions.length > 0;
+  const child = spawn("notify-send", args, {
+    stdio: wantsOutput ? ["ignore", "pipe", "ignore"] : "ignore",
+    detached: !wantsOutput,
   });
   child.on("error", () => {
     console.error(`[tray] ${title}${body ? ` — ${body}` : ""}`);
   });
+  if (wantsOutput) {
+    let out = "";
+    child.stdout?.on("data", (d) => {
+      out += d.toString();
+    });
+    child.on("close", () => {
+      const id = out.trim();
+      if (!id) return;
+      const match = actions.find((a) => a.id === id);
+      match?.onSelected();
+    });
+  }
   child.unref();
 }
 
