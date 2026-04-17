@@ -57,16 +57,35 @@ function consentPageHtml(
     )
     .join("\n      ");
 
+  const jsEnabled = tools.some((t) => t.name === "js");
+  const bashEnabled = tools.some((t) => t.name === "bash");
+  const dangerousToolsWarning =
+    jsEnabled || bashEnabled
+      ? `<p class="warn">⚠ ${
+          jsEnabled && bashEnabled
+            ? "<code>bash</code> and <code>js</code> can execute arbitrary code."
+            : jsEnabled
+              ? "<code>js</code> can execute arbitrary code."
+              : "<code>bash</code> can execute arbitrary code."
+        }${
+          jsEnabled
+            ? ` <code>js</code> runs in a Node.js <code>vm</code> context — <strong>not a security sandbox</strong>. It has unrestricted <code>fetch</code> (network) access and is not limited by the path, command, or sandbox settings below.`
+            : ""
+        }</p>`
+      : "";
+
   const errorHtml = error ? `<div class="error" role="alert">${escapeHtml(error)}</div>` : "";
 
+  const pathScopeNote = `Applies to <code>read</code>, <code>write</code>, <code>edit</code>, <code>glob</code>, <code>grep</code>. Does not restrict <code>bash</code> or <code>js</code>.`;
   const pathsHint = global.allowedPaths?.length
-    ? `<p class="hint">Server restricts paths to: ${global.allowedPaths.map(escapeHtml).join(", ")}</p>`
-    : `<p class="hint">Leave empty for unrestricted. One absolute path per line.</p>`;
+    ? `<p class="hint">Server restricts paths to: ${global.allowedPaths.map(escapeHtml).join(", ")}. ${pathScopeNote}</p>`
+    : `<p class="hint">Leave empty for unrestricted. One absolute path per line. ${pathScopeNote}</p>`;
   const pathsPrefill = global.allowedPaths?.length ? escapeHtml(global.allowedPaths.join("\n")) : "";
 
+  const commandScopeNote = `Applies to <code>bash</code> only; does not restrict <code>js</code>.`;
   const commandsHint = global.allowedCommands?.length
-    ? `<p class="hint">Server restricts commands to: <code>${global.allowedCommands.map(escapeHtml).join("</code>, <code>")}</code></p>`
-    : `<p class="hint">Leave empty for unrestricted. One regex per line; patterns must match the entire command.</p>`;
+    ? `<p class="hint">Server restricts commands to: <code>${global.allowedCommands.map(escapeHtml).join("</code>, <code>")}</code>. ${commandScopeNote}</p>`
+    : `<p class="hint">Leave empty for unrestricted. One regex per line; patterns must match the entire command. ${commandScopeNote}</p>`;
   const commandsPrefill = global.allowedCommands?.length ? escapeHtml(global.allowedCommands.join("\n")) : "";
 
   const sandboxGloballyOn = global.sandbox?.enabled === true;
@@ -175,6 +194,24 @@ function consentPageHtml(
     font-size: 0.85rem;
     margin-bottom: 1rem;
   }
+  .warn {
+    background: #3a2e1c;
+    border: 1px solid #6b5a2c;
+    color: #f5d98a;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    margin-top: 0.5rem;
+    line-height: 1.4;
+  }
+  .warn code {
+    background: #111;
+    padding: 0.05rem 0.3rem;
+    border-radius: 3px;
+    border: 1px solid #2a2a2a;
+    font-size: 0.75rem;
+  }
+  .warn strong { color: #ffcc66; }
   .tools {
     padding: 0.75rem 1rem;
     background: #111;
@@ -255,6 +292,7 @@ function consentPageHtml(
       <div class="tools">
       ${toolCheckboxes}
       </div>
+      ${dangerousToolsWarning}
     </div>
 
     <div class="section">
@@ -270,7 +308,8 @@ function consentPageHtml(
     </div>
 
     <div class="section">
-      <label class="title">Sandbox</label>
+      <label class="title">Sandbox (<code>bash</code> only)</label>
+      <p class="hint">Runs bash in a TypeScript-reimplemented shell with a virtual filesystem. Does not affect <code>js</code>, which is never sandboxed.</p>
       ${sandboxLockedNote}
       <div class="sandbox-row">
         <input type="checkbox" id="sandbox_enabled" name="sandbox_enabled" value="1"${sandboxCheckedAttr}>

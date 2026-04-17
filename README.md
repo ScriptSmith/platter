@@ -20,7 +20,7 @@ Designed to be used by browser-based (or any MCP-compatible) agents, like [Hadri
 | **bash** | Execute shell commands with optional timeout. Output truncated to last 2000 lines or 50KB. |
 | **glob** | Fast file pattern matching. Returns up to 500 paths matching a glob pattern (e.g. `**/*.ts`). |
 | **grep** | Search file contents using [ripgrep](https://github.com/BurntSushi/ripgrep). Supports regex, file filtering, context lines, and multiple output modes. Requires `rg` to be installed. |
-| **js** | Evaluate JavaScript/TypeScript in a persistent sandboxed runtime (Node.js `vm`). State persists across calls within a session. Supports `await`, `console.log`, and loading packages from unpkg.com via `await load("package")`. Auto-returns the last expression. |
+| **js** | Evaluate JavaScript/TypeScript in a persistent Node.js `vm` context. State persists across calls within a session. Supports `await`, `console.log`, and loading packages from unpkg.com via `await load("package")`. Auto-returns the last expression. **Not a security sandbox** — see [Security](#security) below. |
 
 ## Quick start
 
@@ -85,11 +85,13 @@ Process management:
 Restrictions:
       --tools <list>             Comma-separated tools to enable (default: all)
                                  Valid: read, write, edit, bash, glob, grep, js
-      --allow-path <path>        Restrict file tools to this path (repeatable)
+      --allow-path <path>        Restrict read/write/edit/glob/grep to this path (repeatable)
+                                 Does not restrict bash or js
       --allow-command <regex>    Allow bash commands matching this pattern (repeatable)
                                  Pattern must match the entire command string
+                                 Applies to bash only; does not restrict js
 
-Sandbox:
+Sandbox (applies to bash only; the js tool is never sandboxed):
       --sandbox                  Use just-bash sandbox instead of native bash
       --sandbox-fs <mode>        Filesystem backend: memory, overlay, readwrite (default: readwrite)
       --sandbox-allow-url <url>  Allow network access to URL prefix (repeatable)
@@ -297,6 +299,7 @@ This installs:
 #### Known limitations and bypasses
 
 - **Bash is inherently unrestricted.** When the bash tool is enabled, a sufficiently creative command can bypass `--allow-path` entirely (e.g. `cat /etc/passwd`). If you set `--allow-path` without also setting `--allow-command` or removing bash from `--tools`, a warning is printed at startup. For strong file-access control, either disable bash (`--tools read,write,edit,glob,grep`) or pair `--allow-path` with a tight `--allow-command` allowlist.
+- **The `js` tool is not a security sandbox.** It runs code in a Node.js `vm` context, which [Node's own documentation](https://nodejs.org/api/vm.html#vm-executing-javascript) explicitly states is *not* a security mechanism — untrusted code can escape the context via known techniques. Even without an escape, the runtime exposes `fetch` (arbitrary network access, including private/loopback addresses), `Buffer`, and a `load()` helper that downloads and executes arbitrary code from `unpkg.com` or any other URL. None of `--allow-path`, `--allow-command`, `--sandbox`, or `--sandbox-allow-url` apply to the `js` tool — these flags only affect the file and bash tools. If the `js` tool is enabled, treat the server as having roughly the same blast radius as unrestricted bash. To disable it: `--tools read,write,edit,bash,glob,grep`. For strong isolation, run platter inside a container or VM.
 - **Command regex operates on the raw string.** It does not parse shell syntax. Patterns like `--allow-command "git( .*)?"` block `rm && git status` (because the full string doesn't match), but a determined attacker could construct commands that the regex matches yet that execute unintended code, for example if an allowed pattern is too broad. Write patterns as narrowly as possible.
 - **Symlink TOCTOU.** Path validation resolves symlinks at check time. If a symlink target is changed between the check and the actual file operation, the validation can be bypassed. This is a fundamental limitation of userspace path checking.
 - **Glob/grep search scope.** `--allow-path` validates the search directory for glob and grep, but results within that directory tree may include symlinks pointing outside it. The content of those symlink targets could be returned in grep output or listed by glob.

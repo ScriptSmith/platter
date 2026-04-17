@@ -43,11 +43,13 @@ Process management:
 Restrictions:
       --tools <list>             Comma-separated tools to enable (default: all)
                                  Valid: ${ALL_TOOL_NAMES.join(", ")}
-      --allow-path <path>        Restrict file tools to this path (repeatable)
+      --allow-path <path>        Restrict read/write/edit/glob/grep to this path (repeatable)
+                                 Does not restrict bash or js
       --allow-command <regex>    Allow bash commands matching this pattern (repeatable)
                                  Pattern must match the entire command string
+                                 Applies to bash only; does not restrict js
 
-Sandbox:
+Sandbox (applies to bash only; the js tool is never sandboxed):
       --sandbox                  Use just-bash sandbox instead of native bash
       --sandbox-fs <mode>        Filesystem backend: memory, overlay, readwrite (default: readwrite)
       --sandbox-allow-url <url>  Allow network access to URL prefix (repeatable)
