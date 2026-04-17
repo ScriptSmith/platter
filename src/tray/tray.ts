@@ -3,6 +3,7 @@ import dbus from "dbus-next";
 import packageJson from "../../package.json";
 import { getConfigDir, getConfigPath, getLogPath, type PlatterConfig, saveConfig } from "../config.js";
 import { ALL_TOOL_NAMES, type SecurityConfig, setToolEnabled, type ToolName } from "../security.js";
+import type { ActivityMonitor, InvocationRecord } from "./activity-monitor.js";
 import { copyToClipboard } from "./clipboard.js";
 import { DBusMenu, type MenuItem } from "./dbus-menu.js";
 import type { HttpController } from "./http-controller.js";
@@ -40,22 +41,42 @@ const ID = {
   openLog: 41,
   about: 42,
   quit: 43,
+  clientsRow: 50,
+  runningSubmenu: 51,
+  runningEmpty: 52,
+  recentSubmenu: 53,
+  recentEmpty: 54,
+  activitySeparator: 55,
+  runningSlotBase: 500,
+  recentSlotBase: 600,
 } as const;
+
+const RUNNING_SLOT_COUNT = 10;
+const RECENT_SLOT_COUNT = 15;
 
 function toolId(tool: ToolName): number {
   return ID.toolBase + ALL_TOOL_NAMES.indexOf(tool);
+}
+
+function runningSlotId(i: number): number {
+  return ID.runningSlotBase + i;
+}
+
+function recentSlotId(i: number): number {
+  return ID.recentSlotBase + i;
 }
 
 export interface RunTrayOptions {
   http: HttpController;
   security: SecurityConfig;
   config: PlatterConfig;
+  activity?: ActivityMonitor;
   oauthProvider?: import("../oauth/provider.js").PlatterOAuthProvider;
   onQuit: () => Promise<void> | void;
 }
 
 export async function runTray(opts: RunTrayOptions): Promise<{ dispose: () => Promise<void> }> {
-  const { http, security, config, onQuit } = opts;
+  const { http, security, config, onQuit, activity } = opts;
 
   const menu = buildMenu(http, security, config);
   const dbusMenu = new DBusMenu(menu);
@@ -117,11 +138,23 @@ export async function runTray(opts: RunTrayOptions): Promise<{ dispose: () => Pr
       refreshStatus();
       refreshLifecycleButtons(menu, http, dbusMenu);
     }
+    // Re-render elapsed times for running invocations every tick.
+    if (activity && activity.activeCount > 0) {
+      refreshActivity(dbusMenu, activity, sni);
+    }
   }, 1000);
   pollHandle.unref();
 
   refreshStatus();
   refreshLifecycleButtons(menu, http, dbusMenu);
+
+  // Subscribe to activity changes. Each event redraws the affected rows and
+  // toggles the tray icon between idle and active.
+  const onActivityChange = () => refreshActivity(dbusMenu, activity!, sni);
+  if (activity) {
+    activity.on("change", onActivityChange);
+    refreshActivity(dbusMenu, activity, sni);
+  }
 
   // When an OAuth authorization request arrives, notify the user via the
   // desktop notification system. The browser-based client that initiated
@@ -143,6 +176,7 @@ export async function runTray(opts: RunTrayOptions): Promise<{ dispose: () => Pr
   return {
     dispose: async () => {
       clearInterval(pollHandle);
+      if (activity) activity.off("change", onActivityChange);
       await sni.unregister(bus, uniqueName);
       try {
         bus.disconnect();
@@ -163,6 +197,29 @@ function buildMenu(http: HttpController, security: SecurityConfig, _config: Plat
     toggleState: isToolOn(security, name) ? 1 : 0,
   }));
 
+  // Pre-allocate hidden slots for running invocations + recent history so
+  // we can update them via cheap property-change signals rather than
+  // rebuilding the whole layout.
+  const runningChildren: MenuItem[] = [
+    { id: ID.runningEmpty, label: "(idle)", enabled: false },
+    ...Array.from({ length: RUNNING_SLOT_COUNT }, (_, i) => ({
+      id: runningSlotId(i),
+      label: "",
+      enabled: false,
+      visible: false,
+    })),
+  ];
+
+  const recentChildren: MenuItem[] = [
+    { id: ID.recentEmpty, label: "(none yet)", enabled: false },
+    ...Array.from({ length: RECENT_SLOT_COUNT }, (_, i) => ({
+      id: recentSlotId(i),
+      label: "",
+      enabled: false,
+      visible: false,
+    })),
+  ];
+
   return {
     id: ID.root,
     children: [
@@ -171,7 +228,18 @@ function buildMenu(http: HttpController, security: SecurityConfig, _config: Plat
         label: http.isRunning() ? `● Running · ${http.url()}` : "○ Stopped",
         enabled: false,
       },
-      { id: 2, type: "separator" },
+      { id: ID.clientsRow, label: "Clients: 0", enabled: false },
+      {
+        id: ID.runningSubmenu,
+        label: "Running: 0",
+        children: runningChildren,
+      },
+      {
+        id: ID.recentSubmenu,
+        label: "Recent activity",
+        children: recentChildren,
+      },
+      { id: ID.activitySeparator, type: "separator" },
       { id: ID.openWebApp, label: "Open Hadrian Gateway" },
       { id: 6, type: "separator" },
       { id: ID.copyUrl, label: "Copy URL", enabled: http.isRunning() },
@@ -190,7 +258,7 @@ function buildMenu(http: HttpController, security: SecurityConfig, _config: Plat
       { id: 5, type: "separator" },
       { id: ID.openConfig, label: "Open config folder" },
       { id: ID.openLog, label: "Open log file" },
-      { id: ID.about, label: `About Platter ${packageJson.version}`, enabled: false },
+      { id: ID.about, label: `About Platter ${packageJson.version}` },
       { id: ID.quit, label: "Quit" },
     ],
   };
@@ -301,6 +369,10 @@ function buildHandlers(ctx: HandlerContext): Map<number, () => void | Promise<vo
     xdgOpen(getLogPath());
   });
 
+  h.set(ID.about, () => {
+    showAbout(ctx.http);
+  });
+
   h.set(ID.quit, async () => {
     await ctx.onQuit();
     process.exit(0);
@@ -372,6 +444,89 @@ function updateStatus(_root: MenuItem, http: HttpController, dbusMenu: DBusMenu)
   dbusMenu.refreshProperties([ID.status], ["label"]);
 }
 
+function refreshActivity(dbusMenu: DBusMenu, activity: ActivityMonitor, sni: StatusNotifierItem): void {
+  const active = activity.getActive();
+  const recent = activity.getRecent();
+  const patched: number[] = [];
+
+  const clients = findById(dbusMenu, ID.clientsRow);
+  if (clients) {
+    const n = activity.sessionCount;
+    clients.label = `Clients: ${n}`;
+    patched.push(ID.clientsRow);
+  }
+
+  const runningSubmenu = findById(dbusMenu, ID.runningSubmenu);
+  if (runningSubmenu) {
+    runningSubmenu.label = `Running: ${active.length}`;
+    patched.push(ID.runningSubmenu);
+  }
+
+  const runningEmpty = findById(dbusMenu, ID.runningEmpty);
+  if (runningEmpty) {
+    runningEmpty.visible = active.length === 0;
+    patched.push(ID.runningEmpty);
+  }
+
+  for (let i = 0; i < RUNNING_SLOT_COUNT; i++) {
+    const slot = findById(dbusMenu, runningSlotId(i));
+    if (!slot) continue;
+    const record = active[i];
+    if (record) {
+      slot.label = formatRunning(record);
+      slot.visible = true;
+    } else {
+      slot.label = "";
+      slot.visible = false;
+    }
+    patched.push(runningSlotId(i));
+  }
+
+  const recentEmpty = findById(dbusMenu, ID.recentEmpty);
+  if (recentEmpty) {
+    recentEmpty.visible = recent.length === 0;
+    patched.push(ID.recentEmpty);
+  }
+
+  for (let i = 0; i < RECENT_SLOT_COUNT; i++) {
+    const slot = findById(dbusMenu, recentSlotId(i));
+    if (!slot) continue;
+    const record = recent[i];
+    if (record) {
+      slot.label = formatRecent(record);
+      slot.visible = true;
+    } else {
+      slot.label = "";
+      slot.visible = false;
+    }
+    patched.push(recentSlotId(i));
+  }
+
+  dbusMenu.refreshProperties(patched, ["label", "visible"]);
+
+  sni.setActive(active.length > 0);
+}
+
+function formatRunning(record: InvocationRecord): string {
+  const elapsed = formatElapsed(Date.now() - record.startedAt);
+  return `${record.tool} · ${elapsed}`;
+}
+
+function formatRecent(record: InvocationRecord): string {
+  const duration = record.endedAt ? formatElapsed(record.endedAt - record.startedAt) : "?";
+  const marker = record.status === "error" ? "✗" : "✓";
+  return `${marker} ${record.tool} · ${duration}`;
+}
+
+function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.round(seconds % 60);
+  return `${minutes}m${remainder}s`;
+}
+
 function findById(dbusMenu: DBusMenu, id: number): MenuItem | undefined {
   // DBusMenu keeps a private `index` map. Reach in for direct access — the
   // tray is the sole owner of the menu tree so this is safe.
@@ -390,6 +545,58 @@ function notify(title: string, body: string): void {
     console.error(`[tray] ${title}${body ? ` — ${body}` : ""}`);
   });
   child.unref();
+}
+
+const REPO_URL = "https://github.com/ScriptSmith/platter";
+const COPYRIGHT = "Copyright © 2026 Adam Smith";
+const LICENSE = "MIT License";
+
+/**
+ * Pop an info dialog (zenity) with version, paths, license, and an
+ * "Open repository" extra button that launches xdg-open on click. Falls
+ * back to a notify-send notification if zenity isn't installed so the
+ * menu item always does *something* visible.
+ */
+function showAbout(http: HttpController): void {
+  const running = http.isRunning();
+  const lines = [
+    `Platter ${packageJson.version}`,
+    "Your computer, served on a platter.",
+    "",
+    running ? `URL:    ${http.url()}` : "URL:    (server stopped)",
+    `Config: ${getConfigPath()}`,
+    `Log:    ${getLogPath()}`,
+    "",
+    `Repo:    ${REPO_URL}`,
+    `License: ${LICENSE}`,
+    COPYRIGHT,
+  ];
+  const body = lines.join("\n");
+
+  const openRepoLabel = "Open repository";
+  const zenity = spawn(
+    "zenity",
+    [
+      "--info",
+      "--title=About Platter",
+      "--width=460",
+      "--no-wrap",
+      `--text=${body}`,
+      `--extra-button=${openRepoLabel}`,
+    ],
+    { stdio: ["ignore", "pipe", "ignore"] },
+  );
+  let out = "";
+  zenity.stdout?.on("data", (d) => {
+    out += d.toString();
+  });
+  zenity.on("error", () => {
+    // zenity missing — drop to a notification with the same content.
+    notify(`Platter ${packageJson.version}`, body);
+  });
+  zenity.on("close", () => {
+    if (out.trim() === openRepoLabel) xdgOpen(REPO_URL);
+  });
 }
 
 function xdgOpen(target: string): void {

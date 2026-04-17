@@ -1,5 +1,6 @@
 import dbus, { Message, type MessageBus } from "dbus-next";
 import { type Argb32Pixmap, buildRasterizedPixmaps } from "./icon-data.js";
+import { tintPixmaps } from "./icon-tint.js";
 
 const { Interface } = dbus.interface;
 
@@ -25,7 +26,10 @@ export class StatusNotifierItem extends Interface {
   public menuPath: string;
   public iconNameValue: string;
   public iconThemePathValue: string;
+  private readonly idlePixmaps: Argb32Pixmap[];
+  private readonly activePixmaps: Argb32Pixmap[];
   private pixmaps: Argb32Pixmap[];
+  private active: boolean = false;
   private registeredUniqueName: string | null = null;
   private watcherListenerCleanup: (() => void) | null = null;
 
@@ -43,7 +47,12 @@ export class StatusNotifierItem extends Interface {
     // the SVG correctly.
     this.iconNameValue = "";
     this.iconThemePathValue = "";
-    this.pixmaps = buildRasterizedPixmaps();
+    this.idlePixmaps = buildRasterizedPixmaps();
+    // A cool green tint that reads as "something is happening" on both
+    // light and dark panels. The RGB scale factors are applied per-channel
+    // to the idle (near-white) pixmaps.
+    this.activePixmaps = tintPixmaps(this.idlePixmaps, 0.35, 0.9, 0.55);
+    this.pixmaps = this.idlePixmaps;
   }
 
   // --- Read-only properties ------------------------------------------------
@@ -158,6 +167,18 @@ export class StatusNotifierItem extends Interface {
   setStatus(status: "Active" | "Passive" | "NeedsAttention"): void {
     this.status = status;
     this.NewStatus(status);
+  }
+
+  /**
+   * Toggle the icon between its idle and active (tinted) pixmap set.
+   * Emits NewIcon so panels refresh immediately.
+   */
+  setActive(active: boolean): void {
+    if (this.active === active) return;
+    this.active = active;
+    this.pixmaps = active ? this.activePixmaps : this.idlePixmaps;
+    this.NewIcon();
+    this.NewToolTip();
   }
 
   /**

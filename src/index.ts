@@ -10,6 +10,8 @@ import { PlatterClientsStore } from "./oauth/clients-store.js";
 import { type PendingAuthEvent, PlatterOAuthProvider } from "./oauth/provider.js";
 import { ALL_TOOL_NAMES, type SandboxFsMode, type SecurityConfig, type ToolName } from "./security.js";
 import { createServer } from "./server.js";
+import { ActivityLog } from "./tray/activity-log.js";
+import { ActivityMonitor } from "./tray/activity-monitor.js";
 import { HttpController } from "./tray/http-controller.js";
 import { loadFromKeyring, saveToKeyring } from "./tray/keyring.js";
 import { runTray } from "./tray/tray.js";
@@ -304,6 +306,12 @@ async function runHttp() {
     }
   }
 
+  // Only build an ActivityMonitor when the tray is going to consume it —
+  // stdio/headless HTTP have no UI to update, so there's no point paying
+  // for invocation bookkeeping.
+  const activity = trayMode ? new ActivityMonitor() : undefined;
+  const activityLog = activity ? new ActivityLog(activity) : null;
+
   const http = new HttpController({
     cwd,
     security,
@@ -316,6 +324,7 @@ async function runHttp() {
     maxSessions,
     tlsCert: values["tls-cert"],
     tlsKey: values["tls-key"],
+    activity,
   });
 
   await http.start();
@@ -345,10 +354,12 @@ async function runHttp() {
         http,
         security,
         config: persistedConfig,
+        activity,
         oauthProvider,
         onQuit: async () => {
           oauthProvider?.dispose();
           await http.dispose();
+          activityLog?.dispose();
         },
       });
       console.error("System tray registered.");
@@ -363,6 +374,7 @@ async function runHttp() {
       if (tray) await tray.dispose().catch(() => {});
       oauthProvider?.dispose();
       await http.dispose().catch(() => {});
+      activityLog?.dispose();
       process.exit(0);
     })();
   };

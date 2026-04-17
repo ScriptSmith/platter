@@ -12,10 +12,15 @@ import { JsRuntime } from "./tools/js.js";
 import { readTool } from "./tools/read.js";
 import { createSandboxBash } from "./tools/sandbox-bash.js";
 import { writeTool } from "./tools/write.js";
+import type { ActivityMonitor } from "./tray/activity-monitor.js";
 import { resolvePath } from "./utils.js";
 
 export interface CreateServerOpts {
   maxProcesses?: number;
+  /** Optional sink for tool-invocation + session events. */
+  activity?: ActivityMonitor;
+  /** Session identifier recorded on each invocation when `activity` is set. */
+  sessionId?: string | null;
 }
 
 export interface CreateServerResult {
@@ -39,6 +44,8 @@ export function createServer(cwd: string, security: SecurityConfig = {}, opts?: 
 
   const registry = new ProcessRegistry({ maxConcurrent: opts?.maxProcesses ?? 20 });
   const registeredTools = new Map<ToolName, RegisteredTool>();
+  const activity = opts?.activity;
+  const sessionId = opts?.sessionId ?? null;
 
   const register = (name: ToolName, handle: RegisteredTool) => {
     registeredTools.set(name, handle);
@@ -46,6 +53,35 @@ export function createServer(cwd: string, security: SecurityConfig = {}, opts?: 
       handle.disable();
     }
   };
+
+  /**
+   * Wrap a tool handler so start/end are reported to the ActivityMonitor.
+   * Result type is preserved; errors thrown by the handler still bubble, but
+   * the common case (handlers returning `{ isError: true }` on caught errors)
+   * is recognised via the result shape.
+   */
+  function withActivity<A, R extends { isError?: boolean; content: Array<{ type: string; text?: string }> }>(
+    name: ToolName,
+    fn: (args: A, extra: any) => Promise<R>,
+  ): (args: A, extra: any) => Promise<R> {
+    if (!activity) return fn;
+    return async (args, extra) => {
+      const id = activity.invocationStarted(name, sessionId);
+      try {
+        const result = await fn(args, extra);
+        if (result?.isError) {
+          const msg = result.content?.[0]?.text;
+          activity.invocationEnded(id, "error", typeof msg === "string" ? msg : undefined);
+        } else {
+          activity.invocationEnded(id, "ok");
+        }
+        return result;
+      } catch (err: any) {
+        activity.invocationEnded(id, "error", err?.message ?? String(err));
+        throw err;
+      }
+    };
+  }
 
   async function checkPath(path: string): Promise<void> {
     if (security.allowedPaths) {
@@ -75,7 +111,7 @@ export function createServer(cwd: string, security: SecurityConfig = {}, opts?: 
           readOnlyHint: true,
         },
       },
-      async (args, extra) => {
+      withActivity("read", async (args, extra) => {
         if (extra.signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], isError: true };
         try {
           await checkPath(args.path);
@@ -84,7 +120,7 @@ export function createServer(cwd: string, security: SecurityConfig = {}, opts?: 
         } catch (err: any) {
           return { content: [{ type: "text", text: err.message }], isError: true };
         }
-      },
+      }),
     );
     register("read", handle);
   }
@@ -105,7 +141,7 @@ export function createServer(cwd: string, security: SecurityConfig = {}, opts?: 
           destructiveHint: true,
         },
       },
-      async (args, extra) => {
+      withActivity("write", async (args, extra) => {
         if (extra.signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], isError: true };
         try {
           await checkPath(args.path);
@@ -114,7 +150,7 @@ export function createServer(cwd: string, security: SecurityConfig = {}, opts?: 
         } catch (err: any) {
           return { content: [{ type: "text", text: err.message }], isError: true };
         }
-      },
+      }),
     );
     register("write", handle);
   }
@@ -137,7 +173,7 @@ export function createServer(cwd: string, security: SecurityConfig = {}, opts?: 
           destructiveHint: false,
         },
       },
-      async (args, extra) => {
+      withActivity("edit", async (args, extra) => {
         if (extra.signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], isError: true };
         try {
           await checkPath(args.path);
@@ -146,7 +182,7 @@ export function createServer(cwd: string, security: SecurityConfig = {}, opts?: 
         } catch (err: any) {
           return { content: [{ type: "text", text: err.message }], isError: true };
         }
-      },
+      }),
     );
     register("edit", handle);
   }
@@ -183,7 +219,7 @@ Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to termi
             destructiveHint,
           },
         },
-        async (args, extra) => {
+        withActivity("bash", async (args, extra) => {
           try {
             checkCommand(args.command);
             const result = await sandboxBashFn!(args, cwd, { signal: extra.signal });
@@ -191,7 +227,7 @@ Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to termi
           } catch (err: any) {
             return { content: [{ type: "text", text: err.message }], isError: true };
           }
-        },
+        }),
       );
     } else {
       handle = server.registerTool(
@@ -215,7 +251,7 @@ Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to termi
             destructiveHint,
           },
         },
-        async (args, extra) => {
+        withActivity("bash", async (args, extra) => {
           try {
             if (args.command) checkCommand(args.command);
             const result = await bashTool(args, cwd, {
@@ -226,7 +262,7 @@ Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to termi
           } catch (err: any) {
             return { content: [{ type: "text", text: err.message }], isError: true };
           }
-        },
+        }),
       );
     }
     register("bash", handle);
@@ -250,7 +286,7 @@ Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to termi
           readOnlyHint: true,
         },
       },
-      async (args, extra) => {
+      withActivity("glob", async (args, extra) => {
         if (extra.signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], isError: true };
         try {
           await checkPath(args.path ?? cwd);
@@ -259,7 +295,7 @@ Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to termi
         } catch (err: any) {
           return { content: [{ type: "text", text: err.message }], isError: true };
         }
-      },
+      }),
     );
     register("glob", handle);
   }
@@ -303,7 +339,7 @@ Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to termi
           readOnlyHint: true,
         },
       },
-      async (args, extra) => {
+      withActivity("grep", async (args, extra) => {
         try {
           await checkPath(args.path ?? cwd);
           const result = await grepTool(args, cwd, extra.signal);
@@ -311,7 +347,7 @@ Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to termi
         } catch (err: any) {
           return { content: [{ type: "text", text: err.message }], isError: true };
         }
-      },
+      }),
     );
     register("grep", handle);
   }
@@ -333,7 +369,7 @@ Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to termi
           destructiveHint: false,
         },
       },
-      async (args, extra) => {
+      withActivity("js", async (args, extra) => {
         try {
           const timeoutMs = args.timeout ? args.timeout * 1000 : 30000;
           const result = await runtime!.evaluate(args.code, timeoutMs, extra.signal);
@@ -341,7 +377,7 @@ Use bash({ pid }) to wait for more output, or bash({ pid, kill: true }) to termi
         } catch (err: any) {
           return { content: [{ type: "text", text: err.message }], isError: true };
         }
-      },
+      }),
     );
     register("js", handle);
   }

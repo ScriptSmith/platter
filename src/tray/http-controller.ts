@@ -20,6 +20,7 @@ import type { ProcessRegistry } from "../process-registry.js";
 import { ALL_TOOL_NAMES, isToolEnabled, type SecurityConfig, type ToolName } from "../security.js";
 import { type CreateServerOpts, createServer } from "../server.js";
 import type { JsRuntime } from "../tools/js.js";
+import type { ActivityMonitor } from "./activity-monitor.js";
 
 interface SessionEntry {
   server: McpServer;
@@ -46,6 +47,8 @@ export interface HttpControllerOptions {
   maxSessions?: number;
   tlsCert?: string;
   tlsKey?: string;
+  /** Optional observer for session + tool-invocation events (drives the tray UI). */
+  activity?: ActivityMonitor;
 }
 
 const LOCALHOST_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -278,10 +281,18 @@ export class HttpController {
       // Legacy bearer tokens carry no grant → the global config is used as-is.
       const grant = (req.auth?.extra?.grant ?? null) as ClientGrant | null;
       const sessionSecurity = buildSessionSecurity(this.opts.security, grant);
-      const created = createServer(this.opts.cwd, sessionSecurity, this.opts.serverOpts);
+
+      // Reserve the session id up front so tool invocations can tag the
+      // session on their activity records, even for the very first request.
+      const reservedSessionId = crypto.randomUUID();
+      const created = createServer(this.opts.cwd, sessionSecurity, {
+        ...this.opts.serverOpts,
+        activity: this.opts.activity,
+        sessionId: reservedSessionId,
+      });
 
       const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => crypto.randomUUID(),
+        sessionIdGenerator: () => reservedSessionId,
         onsessioninitialized: (id) => {
           this.sessions.set(id, {
             server: created.server,
@@ -292,6 +303,7 @@ export class HttpController {
             lastAccessed: Date.now(),
             grant,
           });
+          this.opts.activity?.sessionCreated(id);
         },
       });
 
@@ -395,6 +407,7 @@ export class HttpController {
     if (session.runtime) session.runtime.dispose();
     session.registry.killAll().then(() => session.registry.dispose());
     session.transport.close?.();
+    this.opts.activity?.sessionDestroyed(id);
   }
 
   private async destroyAllSessions(): Promise<void> {
@@ -403,6 +416,7 @@ export class HttpController {
       const session = this.sessions.get(id)!;
       this.sessions.delete(id);
       if (session.runtime) session.runtime.dispose();
+      this.opts.activity?.sessionDestroyed(id);
       return session.registry.killAll().then(() => {
         session.registry.dispose();
         session.transport.close?.();
