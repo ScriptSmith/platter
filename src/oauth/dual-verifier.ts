@@ -1,3 +1,4 @@
+import { InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { OAuthTokenVerifier } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { PlatterOAuthProvider } from "./provider.js";
@@ -34,6 +35,9 @@ export class DualVerifier implements OAuthTokenVerifier {
       };
     }
 
-    throw new Error("Invalid access token");
+    // InvalidTokenError → 401 with WWW-Authenticate, prompting the client
+    // to re-authenticate. A generic Error would land in the bearer-auth
+    // catch-all and become an opaque 500.
+    throw new InvalidTokenError("Invalid access token");
   }
 }
