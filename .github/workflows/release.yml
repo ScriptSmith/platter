@@ -67,6 +67,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: platter-*
           merge-multiple: true
       - name: Make binaries executable
         run: chmod +x artifacts/platter-*[0-9]
