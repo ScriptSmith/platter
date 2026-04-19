@@ -1,0 +1,42 @@
+{
+  "manifest_version": "0.3",
+  "name": "platter",
+  "display_name": "Platter",
+  "version": "__VERSION__",
+  "description": "MCP server exposing Read, Write, Edit, Bash, Glob, Grep, and JS tools over stdio.",
+  "long_description": "Platter gives AI agents controlled access to a computer's resources — filesystem, shell, and a persistent JavaScript runtime. Ships as a single standalone binary with configurable path/command allowlists and an optional sandboxed bash mode.",
+  "author": {
+    "name": "ScriptSmith",
+    "url": "https://github.com/ScriptSmith"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ScriptSmith/platter"
+  },
+  "homepage": "https://github.com/ScriptSmith/platter",
+  "documentation": "https://github.com/ScriptSmith/platter#readme",
+  "support": "https://github.com/ScriptSmith/platter/issues",
+  "license": "MIT",
+  "icon": "icon.png",
+  "keywords": ["filesystem", "bash", "shell", "developer-tools", "ripgrep"],
+  "server": {
+    "type": "binary",
+    "entry_point": "server/platter",
+    "mcp_config": {
+      "command": "${__dirname}/server/platter",
+      "args": []
+    }
+  },
+  "tools": [
+    { "name": "read", "description": "Read file contents with pagination. Truncates to 2000 lines or 50KB." },
+    { "name": "write", "description": "Create or overwrite files. Auto-creates parent directories." },
+    { "name": "edit", "description": "Find-and-replace with exact or fuzzy matching. Returns a unified diff." },
+    { "name": "bash", "description": "Execute shell commands with optional timeout and reattachment." },
+    { "name": "glob", "description": "Fast file pattern matching (e.g. **/*.ts)." },
+    { "name": "grep", "description": "Search file contents with ripgrep. Requires rg installed on the host." },
+    { "name": "js", "description": "Evaluate JavaScript/TypeScript in a persistent runtime with await and package loading." }
+  ],
+  "compatibility": {
+    "platforms": ["__PLATFORM__"]
+  }
+}

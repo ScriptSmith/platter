@@ -18,6 +18,9 @@
     "compile:linux-arm64": "bun build src/index.ts --compile --external x11 --target=bun-linux-arm64 --outfile=dist/platter-linux-arm64",
     "compile:darwin-x64": "bun build src/index.ts --compile --external x11 --target=bun-darwin-x64 --outfile=dist/platter-darwin-x64",
     "compile:darwin-arm64": "bun build src/index.ts --compile --external x11 --target=bun-darwin-arm64 --outfile=dist/platter-darwin-arm64",
+    "pack:mcpb": "bun run scripts/build-mcpb.ts",
+    "render:server-json": "bun run scripts/render-server-json.ts",
+    "install:mcp-publisher": "./scripts/install-mcp-publisher.sh",
     "test": "bun test"
   },
   "dependencies": {

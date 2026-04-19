@@ -13,6 +13,7 @@ on:
 permissions:
   contents: write
   packages: write
+  id-token: write
 
 jobs:
   build:
@@ -23,22 +24,35 @@ jobs:
         include:
           - target: bun-linux-x64
             artifact: platter-linux-x64
+            os: linux
+            arch: x64
           - target: bun-linux-arm64
             artifact: platter-linux-arm64
+            os: linux
+            arch: arm64
           - target: bun-darwin-x64
             artifact: platter-darwin-x64
+            os: darwin
+            arch: x64
           - target: bun-darwin-arm64
             artifact: platter-darwin-arm64
+            os: darwin
+            arch: arm64
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+      - run: sudo apt-get update && sudo apt-get install -y imagemagick zip
       - run: bun install --frozen-lockfile
       - name: Compile
-        run: bun build src/index.ts --compile --external x11 --target=${{ matrix.target }} --outfile=${{ matrix.artifact }}
+        run: bun build src/index.ts --compile --external x11 --target=${{ matrix.target }} --outfile=dist/${{ matrix.artifact }}
+      - name: Pack mcpb
+        run: bun run pack:mcpb --os ${{ matrix.os }} --arch ${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
+          path: |
+            dist/${{ matrix.artifact }}
+            dist/${{ matrix.artifact }}.mcpb
 
   release:
     name: Create Release
@@ -46,17 +60,33 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
       - name: Make binaries executable
-        run: chmod +x artifacts/platter-*
+        run: chmod +x artifacts/platter-*[0-9]
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: artifacts/platter-*
+          files: |
+            artifacts/platter-*[0-9]
+            artifacts/platter-*.mcpb
+      - name: Render server.json
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          bun run render:server-json --version "$VERSION" --mcpb-dir artifacts --out server.json
+          cat server.json
+      - name: Install mcp-publisher
+        run: bun run install:mcp-publisher
+      - name: Login to MCP Registry (GitHub OIDC)
+        run: ./.bin/mcp-publisher login github-oidc
+      - name: Publish to MCP Registry
+        run: ./.bin/mcp-publisher publish
 
   docker:
     name: Push Docker Image
