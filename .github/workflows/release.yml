@@ -57,7 +57,7 @@ jobs:
   release:
     name: Create Release
     if: ${{ !inputs.dry-run }}
-    needs: build
+    needs: [build, docker]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

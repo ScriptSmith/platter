@@ -39,6 +39,11 @@
       "identifier": "https://github.com/ScriptSmith/platter/releases/download/v__VERSION__/platter-darwin-arm64.mcpb",
       "fileSha256": "__SHA256_DARWIN_ARM64__",
       "transport": { "type": "stdio" }
+    },
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/scriptsmith/platter:__VERSION__",
+      "transport": { "type": "stdio" }
     }
   ]
 }
