@@ -44,6 +44,22 @@
       "registryType": "oci",
       "identifier": "ghcr.io/scriptsmith/platter:__VERSION__",
       "transport": { "type": "stdio" }
+    },
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/scriptsmith/platter:__VERSION__",
+      "runtimeHint": "docker",
+      "transport": {
+        "type": "streamable-http",
+        "url": "http://localhost:3100/mcp"
+      },
+      "runtimeArguments": [
+        { "type": "named", "name": "-p", "value": "3100:3100" }
+      ],
+      "packageArguments": [
+        { "type": "positional", "value": "--transport=http" },
+        { "type": "positional", "value": "--host=0.0.0.0" }
+      ]
     }
   ]
 }
