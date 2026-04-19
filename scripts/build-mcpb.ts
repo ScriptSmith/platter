@@ -12,11 +12,12 @@
  *   --binary dist/platter-<os>-<arch>
  *   --out    dist/platter-<os>-<arch>.mcpb
  *
- * Requires ImageMagick (`magick` or `convert`) and `zip` on PATH.
+ * Requires `rsvg-convert` (librsvg) or ImageMagick, plus `zip`, on PATH.
  */
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { rasterizeSvg } from "./lib/rasterize-svg.js";
 import {
   chmodSync,
   copyFileSync,
@@ -67,26 +68,6 @@ if (!existsSync(binaryPath)) {
   process.exit(1);
 }
 
-function findImageMagick(): string {
-  for (const bin of ["magick", "convert"]) {
-    try {
-      execFileSync(bin, ["-version"], { stdio: "ignore" });
-      return bin;
-    } catch {
-      // try next
-    }
-  }
-  throw new Error("ImageMagick not found — install IM7 (`magick`) or IM6 (`convert`) on PATH.");
-}
-
-function rasterizeIcon(svgPath: string, outPath: string, size: number): void {
-  const im = findImageMagick();
-  execFileSync(
-    im,
-    ["-background", "none", "-density", String(size * 4), svgPath, "-resize", `${size}x${size}`, outPath],
-    { stdio: ["ignore", "ignore", "inherit"] },
-  );
-}
 
 function renderManifest(templatePath: string, version: string, platform: string): string {
   const raw = readFileSync(templatePath, "utf8");
@@ -108,7 +89,7 @@ try {
   if (!existsSync(svgPath)) {
     throw new Error(`Missing source SVG at ${svgPath}`);
   }
-  rasterizeIcon(svgPath, join(stagingRoot, "icon.png"), 512);
+  rasterizeSvg(svgPath, join(stagingRoot, "icon.png"), 512);
 
   const manifestPath = join(projectRoot, "mcpb", "manifest.template.json");
   const rendered = renderManifest(manifestPath, packageJson.version, mcpbPlatform);

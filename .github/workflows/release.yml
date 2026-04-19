@@ -41,7 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
-      - run: sudo apt-get update && sudo apt-get install -y imagemagick zip
+      - run: sudo apt-get update && sudo apt-get install -y librsvg2-bin zip
       - run: bun install --frozen-lockfile
       - name: Compile
         run: bun build src/index.ts --compile --external x11 --target=${{ matrix.target }} --outfile=dist/${{ matrix.artifact }}
@@ -62,7 +62,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
-      - run: sudo apt-get update && sudo apt-get install -y imagemagick
+      - run: sudo apt-get update && sudo apt-get install -y librsvg2-bin
       - run: bun install --frozen-lockfile
       - uses: actions/download-artifact@v4
         with:
