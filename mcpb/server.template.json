@@ -8,6 +8,13 @@
     "url": "https://github.com/ScriptSmith/platter",
     "source": "github"
   },
+  "icons": [
+    {
+      "src": "https://github.com/ScriptSmith/platter/releases/download/v__VERSION__/icon.png",
+      "mimeType": "image/png",
+      "sizes": ["512x512"]
+    }
+  ],
   "packages": [
     {
       "registryType": "mcpb",
