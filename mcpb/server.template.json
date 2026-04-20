@@ -54,7 +54,8 @@
         "url": "http://localhost:3100/mcp"
       },
       "runtimeArguments": [
-        { "type": "named", "name": "-p", "value": "3100:3100" }
+        { "type": "named", "name": "-p", "value": "3100:3100" },
+        { "type": "named", "name": "-e", "value": "MCP_DANGEROUSLY_ALLOW_INSECURE_ISSUER_URL=true" }
       ],
       "packageArguments": [
         { "type": "positional", "value": "--transport=http" },
